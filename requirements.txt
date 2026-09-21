@@ -1,0 +1,10 @@
+# torch is expected to come from the conda environment (e.g. `conda activate toast`); not pinned here
+torch>=2.0
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+ezdxf==1.4.4
+shapely==2.1.2
+numpy==2.4.6
+python-multipart==0.0.32
+pytest==9.1.1
+matplotlib==3.11.2

@@ -1,0 +1,1839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bolt Group Optimizer</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #d9dde3; --text: #1f2933; --muted: #6b7280;
+    --accent: #2b6cb0; --accent-soft: #e6eef8; --ok: #2f855a; --ok-soft: #e6f4ec;
+    --warn: #b7791f; --warn-soft: #fdf3e1; --bad: #b00020; --bad-soft: #fde8ea;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+  }
+  html, body { margin: 0; padding: 0; height: 100%; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+               font-size: 13px; color: var(--text); background: var(--bg); }
+  #app { display: flex; height: 100vh; overflow: hidden; }
+  #canvasWrap { flex: 1; position: relative; background: #1b1d21; min-width: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #sidebar { width: 380px; flex: none; height: 100vh; overflow-y: auto; background: var(--bg);
+             border-left: 1px solid var(--line); box-sizing: border-box; padding: 8px 10px 40px 10px; }
+
+  /* status line */
+  #status { position: sticky; top: 0; z-index: 5; margin: -8px -10px 8px -10px; padding: 8px 10px;
+            background: var(--panel); border-bottom: 1px solid var(--line); }
+  #status .title { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  #status .need { color: var(--warn); }
+  #status .ready { color: var(--ok); }
+  #status .mode { color: var(--muted); font-size: 12px; }
+  #status .mode b { color: var(--accent); }
+
+  /* steps */
+  details.step { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; }
+  details.step > summary { cursor: pointer; padding: 6px 10px; font-weight: 600; list-style: none;
+                           display: flex; align-items: center; gap: 8px; user-select: none; }
+  details.step > summary::-webkit-details-marker { display: none; }
+  details.step > summary .num { display: inline-flex; width: 18px; height: 18px; border-radius: 9px; background: var(--accent);
+                                color: #fff; font-size: 11px; align-items: center; justify-content: center; flex: none; }
+  details.step > summary .sum { margin-left: auto; font-weight: 400; color: var(--muted); font-size: 12px;
+                                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+  details.step > summary .sum.ok { color: var(--ok); }
+  details.step > summary .sum.bad { color: var(--bad); }
+  details.step > summary::after { content: "▸"; color: var(--muted); font-size: 11px; }
+  details.step[open] > summary::after { content: "▾"; }
+  details.step > .body { padding: 4px 10px 10px 10px; border-top: 1px solid var(--line); }
+  .hint { color: var(--muted); font-size: 12px; margin: 4px 0; }
+
+  button { margin: 2px 4px 2px 0; padding: 4px 9px; cursor: pointer; border: 1px solid #b8bfc9; border-radius: 4px;
+           background: #fff; color: var(--text); font: inherit; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; padding: 6px 14px; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.small { padding: 1px 6px; font-size: 11px; }
+
+  label { display: inline-block; width: 120px; color: #374151; }
+  input[type=number], input[type=text], select { width: 96px; padding: 2px 4px; border: 1px solid #b8bfc9; border-radius: 3px;
+                                                 font: inherit; box-sizing: border-box; }
+  input[type=number] { font-family: var(--mono); text-align: right; }
+  .row { margin-bottom: 4px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+  .row .unit { color: var(--muted); font-size: 11px; }
+  .row.check label { width: auto; }
+  .kv { margin: 2px 0; }
+  .kv span.v { font-family: var(--mono); }
+
+  /* tables */
+  table.tbl { border-collapse: collapse; width: 100%; font-size: 11.5px; margin-top: 4px; }
+  #sidebar { overflow-x: hidden; }
+  .tblWrap { overflow-x: auto; max-width: 100%; }
+  table.tbl th { text-align: left; font-weight: 600; font-size: 11px; color: var(--muted); text-transform: uppercase;
+                 letter-spacing: 0.02em; border-bottom: 1px solid var(--line); padding: 2px 4px; white-space: nowrap; }
+  table.tbl td { padding: 2px 3px; border-bottom: 1px solid #eef0f3; white-space: nowrap; }
+  table.tbl th.num, table.tbl td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  table.tbl tr.gov td { background: var(--warn-soft); font-weight: 600; }
+  table.tbl tr.win td { background: var(--ok-soft); font-weight: 600; }
+  table.tbl tr.bad td { background: var(--bad-soft); }
+  table.tbl tr.fixed td:first-child { color: var(--ok); font-weight: 600; }
+  h4 { margin: 10px 0 2px 0; font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.03em; }
+
+  /* force cases */
+  .caseRow { border: 1px solid var(--line); background: #fbfcfd; padding: 6px; margin-bottom: 6px; border-radius: 4px; }
+  .caseRow.picking { border-color: #e91e63; box-shadow: 0 0 0 1px #e91e63; }
+  .caseRow label { width: 84px; }
+  .caseRow input.cname { width: 150px; }
+  .caseRow .pt { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+  .caseRow .pt.missing { color: var(--warn); font-family: inherit; }
+  .caseRow button.rm { float: right; }
+
+  /* results header */
+  #resHead { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0; }
+  #resHead .tile { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
+  #resHead .tile .l { font-size: 10px; text-transform: uppercase; color: var(--muted); }
+  #resHead .tile .v { font-size: 16px; font-weight: 600; font-family: var(--mono); }
+  #resHead .tile .s { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+  #resHead .tile.ok .v { color: var(--ok); }
+  #resHead .tile.bad .v { color: var(--bad); }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+  .badge.bad { background: var(--bad); color: #fff; }
+  .badge.ok { background: var(--ok); color: #fff; }
+  .badge.info { background: var(--accent-soft); color: var(--accent); }
+  #altList button { min-width: 30px; }
+  #altList button.sel { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #altList .alt { display: inline-block; margin-right: 8px; font-family: var(--mono); }
+
+  /* run */
+  progress { width: 100%; height: 10px; }
+  #progressText { font-family: var(--mono); font-size: 11px; color: var(--muted); min-height: 14px; }
+
+  /* canvas overlays */
+  #legend { position: absolute; left: 8px; bottom: 8px; background: rgba(20,22,26,0.82); color: #d5d8dd;
+            font: 11px system-ui, sans-serif; padding: 6px 8px; border-radius: 4px; pointer-events: none;
+            display: grid; grid-template-columns: auto auto; gap: 2px 12px; }
+  #legend .it { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #legend .sw { display: inline-block; width: 16px; height: 0; border-top: 2px solid; }
+  #legend .sw.fill { height: 10px; border: 1px solid; box-sizing: border-box; }
+  #legend .sw.dot { width: 10px; height: 10px; border-radius: 5px; border: 1.5px solid; box-sizing: border-box; }
+  #busy { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); background: rgba(20,22,26,0.9);
+          color: #fff; padding: 6px 12px; border-radius: 4px; font-size: 12px; display: none; align-items: center; gap: 8px;
+          pointer-events: none; }
+  #busy .spin { width: 12px; height: 12px; border: 2px solid #999; border-top-color: #fff; border-radius: 50%;
+                animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #toasts { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; gap: 6px; max-width: 420px; z-index: 10; }
+  .toast { padding: 7px 10px; border-radius: 4px; font-size: 12px; color: #fff; cursor: pointer;
+           box-shadow: 0 2px 6px rgba(0,0,0,0.4); white-space: pre-wrap; }
+  .toast.err { background: #b00020; }
+  .toast.info { background: #2b6cb0; }
+  .toast.warn { background: #b7791f; }
+  #modeHint { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); background: rgba(43,108,176,0.9);
+              color: #fff; padding: 4px 10px; border-radius: 4px; font-size: 12px; display: none; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="canvasWrap">
+    <canvas id="canvas"></canvas>
+    <div id="legend">
+      <span class="it"><span class="sw" style="border-color:#8ab4f8"></span>part outline</span>
+      <span class="it"><span class="sw" style="border-color:#9aa0a6"></span>hole / other loop</span>
+      <span class="it"><span class="sw fill" style="border-color:#f5a623;background:rgba(245,166,35,0.25)"></span>keepout (solid, no bolts)</span>
+      <span class="it"><span class="sw" style="border-color:#8a8f98;border-style:dashed"></span>ignore (construction geometry)</span>
+      <span class="it"><span class="sw fill" style="border-color:#34d399;background:rgba(52,211,153,0.2)"></span>legal region</span>
+      <span class="it"><span class="sw dot" style="border-color:#e8eaed;background:rgba(255,255,255,0.2)"></span>bolt (true dia)</span>
+      <span class="it"><span class="sw dot" style="border-color:#34d399"></span>fixed bolt</span>
+      <span class="it"><span class="sw dot" style="border-color:#ff7043"></span>governing bolt</span>
+      <span class="it"><span class="sw" style="border-color:#ffd54f"></span>bearing dir (per case colour)</span>
+      <span class="it"><span class="sw" style="border-color:#4dd0e1"></span>datum (x, y)</span>
+    </div>
+    <div id="busy"><span class="spin"></span><span id="busyText">Working…</span></div>
+    <div id="modeHint"></div>
+    <div id="toasts"></div>
+  </div>
+
+  <div id="sidebar">
+    <div id="status">
+      <div class="title">Bolt Group Optimizer</div>
+      <div id="statusLine" class="need">Load a DXF to begin.</div>
+      <div class="mode">Mode: <b id="modeLabel">none</b> <span id="modeTip"></span></div>
+    </div>
+
+    <details class="step" id="stepLoad" open>
+      <summary><span class="num">1</span>Load<span class="sum" id="sumLoad">no file</span></summary>
+      <div class="body">
+        <input type="file" id="fileInput" accept=".dxf">
+        <div class="kv">Units: <span class="v" id="unitsEffective">-</span></div>
+        <div class="row" style="margin-top:4px"><label>Units override</label>
+          <select id="unitsOverride">
+            <option value="">(from DXF)</option>
+            <option value="mm">mm</option>
+            <option value="in">in</option>
+            <option value="unknown">unknown</option>
+          </select>
+        </div>
+        <div class="hint" id="loadNotes"></div>
+      </div>
+    </details>
+
+    <details class="step" id="stepSelect" open>
+      <summary><span class="num">2</span>Part &amp; keepouts<span class="sum" id="sumSelect">no part</span></summary>
+      <div class="body">
+        <button id="modeSelectPart">Select part</button>
+        <button id="modeSelectKeepout">Select keepout</button>
+        <button id="modeSelectIgnore">Mark ignore</button>
+        <div class="kv">Part loop: <span class="v" id="partLabel">none</span></div>
+        <div class="kv">Keepout loops: <span class="v" id="keepoutLabel">none</span></div>
+        <div class="kv">Ignored loops: <span class="v" id="ignoreLabel">none</span></div>
+        <div class="hint">Click a loop on the canvas. <b>Unmarked</b> interior loop: a hole — removed
+          material, forbidden to bolts, and a bearing edge. <b>Keepout</b>: solid material — forbidden
+          to bolts, but not a bearing edge (use for a bolt-circle reference or other placement-only
+          exclusion). <b>Ignore</b>: construction geometry — no effect on either region, drawn faint.</div>
+        <div class="row check"><label><input type="checkbox" id="showRegion"> Show legal region</label></div>
+      </div>
+    </details>
+
+    <details class="step" id="stepDatum" open>
+      <summary><span class="num">3</span>Datum &amp; forces<span class="sum" id="sumDatum">no datum</span></summary>
+      <div class="body">
+        <button id="modeDatum">Pick datum</button>
+        <span class="kv">Datum: <span class="v" id="datumLabel">none</span></span>
+        <div class="hint">All reported coordinates are relative to the datum (+x right, +y up).</div>
+        <h4>Force cases</h4>
+        <div id="forceList"></div>
+        <button id="addCaseBtn">+ Add case</button>
+        <div class="hint">Cases are evaluated independently on the same bolt group; the layout must clear the
+          ceiling in every case. Angle in degrees, 0 = +x, counter-clockwise positive.</div>
+      </div>
+    </details>
+
+    <details class="step" id="stepBolts">
+      <summary><span class="num">4</span>Fixed bolts<span class="sum" id="sumBolts">none</span></summary>
+      <div class="body">
+        <button id="modePlaceBolt">Place bolt</button>
+        <button id="clearFixedBtn" class="danger">Clear all</button>
+        <div class="hint">Optional. Click snaps to the nearest hole centre / vertex, otherwise places where
+          you clicked. A fixed bolt carries load like any other but never moves. Hover a fixed bolt and press
+          Delete to remove it.</div>
+        <div id="fixedList"></div>
+      </div>
+    </details>
+
+    <details class="step" id="stepSettings" open>
+      <summary><span class="num">5</span>Settings<span class="sum" id="sumSettings"></span></summary>
+      <div class="body">
+        <div class="row"><label>Edge clearance</label><input type="number" id="edgeClearance" value="10" min="0" step="0.5"><span class="unit u"></span></div>
+        <div class="row"><label>Min bolt spacing</label><input type="number" id="minSpacing" value="20" min="0" step="0.5"><span class="unit u"></span></div>
+        <div class="row"><label>Bolt diameter</label><input type="number" id="boltDiameter" value="6" min="0" step="0.5"><span class="unit u"></span></div>
+        <div class="row check"><label><input type="checkbox" id="bearingEnabled" checked> Bearing / tear-out model</label></div>
+        <div class="row"><label>Load ceiling</label><input type="number" id="loadCeiling" value="1000" min="0" step="10"><span class="unit">per bolt</span></div>
+        <div class="row"><label>N min / max</label>
+          <input type="number" id="nMin" value="2" min="1" step="1" style="width:56px">
+          <input type="number" id="nMax" value="12" min="1" step="1" style="width:56px"></div>
+        <div class="row"><label>Seeds per N</label><input type="number" id="seedsPerN" value="80" min="1" step="10"></div>
+        <div class="row"><label>Iterations</label><input type="number" id="iterations" value="300" min="10" step="50"></div>
+        <div class="row check"><label><input type="checkbox" id="useGpu"> Use GPU</label> <span id="deviceLabel" class="hint"></span></div>
+      </div>
+    </details>
+
+    <details class="step" id="stepRun" open>
+      <summary><span class="num">6</span>Run<span class="sum" id="sumRun"></span></summary>
+      <div class="body">
+        <button id="runBtn" class="primary" disabled>Run optimizer</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <progress id="runProgress" value="0" max="1" style="display:none"></progress>
+        <div id="progressText"></div>
+      </div>
+    </details>
+
+    <details class="step" id="stepResults" open>
+      <summary><span class="num">7</span>Results<span class="sum" id="sumResults">none yet</span></summary>
+      <div class="body">
+        <div id="resultsArea" class="hint">No result yet. Run the optimizer, or place fixed bolts and drag them to score
+          a layout by hand.</div>
+        <div id="perNArea"></div>
+        <div id="altArea"></div>
+      </div>
+    </details>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const $ = id => document.getElementById(id);
+
+let state = {
+  loops: [], open_chains: [], snap_points: [], units: 'unknown', bbox: null,
+  loaded: false,
+  roles: {}, datum: null,
+  // Independent load cases. Each carries its own application point and its own
+  // magnitude/angle; the optimizer evaluates every one of them separately
+  // against the same bolt group.
+  forces: [],          // [{name, x, y, mag, angle}]  x/y null until picked
+  pickCase: null,      // index of the case whose point is being picked
+  region: null,
+  mode: 'none',
+  bolts: [],           // live/final bolt positions (the layout on screen)
+  boltFixed: [],       // per-entry of state.bolts: true when user-placed
+  fixedBolts: [],      // [{x, y}] user-placed bolts, pinned during optimization
+  badFixed: [],        // indices the backend rejected (drawn red)
+  // Per-bolt status from the last POST /evaluate, aligned with layoutBolts():
+  // {bad, over, in_region, spacing_ok}. Drives the red bolts and the red rows.
+  boltStatus: [],
+  dragged: new Set(),  // layout indices the user has dragged this manual session
+  hoverLoop: null, hoverSnap: null, hoverBolt: null,
+  running: false,
+};
+
+// world->screen: sx = x*scale + ox ; sy = ch - (y*scale + oy). cw/ch are CSS px.
+let view = { scale: 1, ox: 0, oy: 0 };
+let cw = 0, ch = 0, dpr = 1;
+let fitPending = false; // set when fitToView ran before the canvas had a usable size
+
+function resizeCanvas() {
+  const wrap = $('canvasWrap');
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  const ndpr = window.devicePixelRatio || 1;
+  if (w === cw && h === ch && ndpr === dpr) {
+    // A deferred fit must still be applied even when the size did not change,
+    // otherwise this early return strands the view at identity forever.
+    if (!fitPending) return;
+  } else {
+    cw = w; ch = h; dpr = ndpr;
+    canvas.width = Math.max(1, Math.round(w * dpr));
+    canvas.height = Math.max(1, Math.round(h * dpr));
+  }
+  if (fitPending) fitToView();
+  draw();
+}
+window.addEventListener('resize', resizeCanvas);
+if (window.ResizeObserver) new ResizeObserver(resizeCanvas).observe($('canvasWrap'));
+
+function worldToScreen(x, y) { return [x * view.scale + view.ox, ch - (y * view.scale + view.oy)]; }
+function screenToWorld(sx, sy) { return [(sx - view.ox) / view.scale, (ch - sy - view.oy) / view.scale]; }
+
+function validBbox(b) {
+  return b && ['minx', 'miny', 'maxx', 'maxy'].every(k => Number.isFinite(b[k])) && b.maxx >= b.minx && b.maxy >= b.miny;
+}
+
+function fitToView() {
+  const b = validBbox(state.bbox) ? state.bbox : bboxFromLoops();
+  if (!b) return;
+  const w = b.maxx - b.minx || 1;
+  const h = b.maxy - b.miny || 1;
+  if (cw < 1 || ch < 1) { fitPending = true; return; }
+  const margin = Math.min(48, cw * 0.1, ch * 0.1);
+  const s = Math.min((cw - margin * 2) / w, (ch - margin * 2) / h);
+  if (!Number.isFinite(s) || s <= 0) { fitPending = true; return; }
+  view.scale = s;
+  view.ox = (cw - w * s) / 2 - b.minx * s;
+  view.oy = (ch - h * s) / 2 - b.miny * s;
+  fitPending = false;
+}
+
+function bboxFromLoops() {
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  const consider = p => {
+    if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) return;
+    if (p[0] < minx) minx = p[0];
+    if (p[0] > maxx) maxx = p[0];
+    if (p[1] < miny) miny = p[1];
+    if (p[1] > maxy) maxy = p[1];
+  };
+  state.loops.forEach(l => l.forEach(consider));
+  state.open_chains.forEach(c => c.forEach(consider));
+  if (!Number.isFinite(minx)) return null;
+  return { minx, miny, maxx, maxy };
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+const C = {
+  bg: '#1b1d21', part: '#8ab4f8', partFill: 'rgba(138,180,248,0.10)', hole: '#9aa0a6', stray: '#5f6368',
+  hover: '#ffffff', keepout: '#f5a623', keepoutFill: 'rgba(245,166,35,0.22)', ignore: '#8a8f98',
+  region: 'rgba(52,211,153,0.55)', regionFill: 'rgba(52,211,153,0.13)', open: '#ff5252',
+  snap: '#ffd54f', datum: '#4dd0e1', force: '#f48fb1', forceActive: '#ffffff',
+  bolt: '#e8eaed', boltFill: 'rgba(255,255,255,0.18)', fixed: '#34d399', bad: '#ff5252', badFill: 'rgba(255,82,82,0.3)',
+  gov: '#ff7043', bearing: 'rgba(255,213,79,0.75)', label: '#c9ccd1',
+};
+
+// One colour per force case, assigned by index and reused for its arrow, its
+// label and its per-bolt bearing ticks so a tick always reads back to its case.
+const CASE_PALETTE = ['#f48fb1', '#64b5f6', '#aed581', '#ffb74d', '#ba68c8', '#4db6ac', '#fff176', '#9575cd'];
+function caseColor(i) { return CASE_PALETTE[((i % CASE_PALETTE.length) + CASE_PALETTE.length) % CASE_PALETTE.length]; }
+
+function isPickMode() { return state.mode === 'datum' || state.mode === 'force' || state.mode === 'placebolt'; }
+function isRoleMode(m) { return m === 'part' || m === 'keepout' || m === 'ignore'; }
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, cw, ch);
+  if (!state.loaded && !state.loops.length) { drawEmptyHint(); return; }
+
+  const partIdx = partLoopIndex();
+  const partHoles = partIdx != null ? holesOfLoop(partIdx) : [];
+
+  // legal region overlay
+  if (state.region && $('showRegion').checked) {
+    ctx.fillStyle = C.regionFill;
+    ctx.strokeStyle = C.region;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    for (const poly of state.region) {
+      ctx.beginPath();
+      drawRing(poly.exterior);
+      for (const hole of poly.holes) drawRing(hole, true);
+      ctx.fill('evenodd');
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
+  // part fill (punching out only its real holes -- keepouts and ignores stay
+  // filled as part material) and hover fill
+  if (partIdx != null) fillPartRegion(state.loops[partIdx], partHoles, C.partFill);
+  if (state.hoverLoop != null && state.roles[state.hoverLoop] == null && isRoleMode(state.mode)) {
+    fillPartRegion(state.loops[state.hoverLoop], holesOfLoop(state.hoverLoop), 'rgba(255,255,255,0.12)');
+  }
+
+  // loops
+  state.loops.forEach((loop, idx) => {
+    const role = state.roles[idx];
+    const hovered = idx === state.hoverLoop && isRoleMode(state.mode);
+    ctx.beginPath();
+    ringPath(ctx, loop);
+    if (role === 'keepout') {
+      ctx.fillStyle = C.keepoutFill; ctx.fill();
+      ctx.strokeStyle = hovered ? C.hover : C.keepout; ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else if (role === 'ignore') {
+      ctx.strokeStyle = hovered ? C.hover : C.ignore; ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (role === 'part') {
+      ctx.strokeStyle = hovered ? C.hover : C.part; ctx.lineWidth = 1.8;
+      ctx.stroke();
+    } else if (hovered) {
+      ctx.strokeStyle = C.hover; ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else if (partIdx != null && partHoles.includes(loop)) {
+      ctx.strokeStyle = C.hole; ctx.lineWidth = 1;
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = partIdx != null ? C.stray : C.hole; ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  });
+
+  // open chains (red)
+  ctx.strokeStyle = C.open; ctx.lineWidth = 2;
+  state.open_chains.forEach(chain => {
+    ctx.beginPath();
+    chain.forEach((p, i) => { const [sx, sy] = worldToScreen(p[0], p[1]); i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); });
+    ctx.stroke();
+  });
+
+  // snap points (only in pick modes)
+  if (isPickMode()) {
+    ctx.fillStyle = C.snap;
+    state.snap_points.forEach(p => {
+      const [sx, sy] = worldToScreen(p.x, p.y);
+      if (sx < -4 || sy < -4 || sx > cw + 4 || sy > ch + 4) return;
+      ctx.beginPath(); ctx.arc(sx, sy, p.kind === 'center' ? 2.5 : 1.5, 0, Math.PI * 2); ctx.fill();
+    });
+    if (state.hoverSnap) {
+      const [sx, sy] = worldToScreen(state.hoverSnap.x, state.hoverSnap.y);
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(sx, sy, 7, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  drawDatum();
+  drawBolts();
+  drawForces();
+  drawScaleBar();
+}
+
+function drawEmptyHint() {
+  ctx.fillStyle = '#6b7280';
+  ctx.font = '14px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Load a DXF (step 1) to begin', cw / 2, ch / 2);
+  ctx.textAlign = 'left';
+}
+
+function drawDatum() {
+  if (!state.datum) return;
+  const [sx, sy] = worldToScreen(state.datum.x, state.datum.y);
+  ctx.strokeStyle = C.datum; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(sx - 9, sy); ctx.lineTo(sx + 9, sy);
+  ctx.moveTo(sx, sy - 9); ctx.lineTo(sx, sy + 9);
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.stroke();
+  // axis stubs so the sign convention is obvious
+  const L = 26;
+  ctx.beginPath();
+  ctx.moveTo(sx + 9, sy); ctx.lineTo(sx + L, sy);
+  ctx.moveTo(sx + L, sy); ctx.lineTo(sx + L - 5, sy - 3); ctx.moveTo(sx + L, sy); ctx.lineTo(sx + L - 5, sy + 3);
+  ctx.moveTo(sx, sy - 9); ctx.lineTo(sx, sy - L);
+  ctx.moveTo(sx, sy - L); ctx.lineTo(sx - 3, sy - L + 5); ctx.moveTo(sx, sy - L); ctx.lineTo(sx + 3, sy - L + 5);
+  ctx.stroke();
+  ctx.fillStyle = C.datum; ctx.font = '11px system-ui, sans-serif';
+  ctx.fillText('x', sx + L + 3, sy + 4);
+  ctx.fillText('y', sx + 4, sy - L + 2);
+}
+
+// Screen radius bolts are drawn at (their real diameter, with a floor so they
+// stay visible zoomed out). Shared by the drawing code and by drag hit-testing.
+function boltRadiusPx() {
+  const d = parseFloat($('boltDiameter').value) || 0;
+  return d > 0
+    ? Math.max(3, d * 0.5 * view.scale)
+    : Math.max(3, (parseFloat($('minSpacing').value) || 10) * 0.15 * view.scale);
+}
+
+// One tick per force case per bolt, coloured to match that case's arrow, when
+// the backend has reported per-(case, bolt) bearing directions for the layout
+// currently on screen. Falls back to a single JS-computed tick (in the shared
+// bearing colour, for the governing case only) before any /evaluate or run has
+// reported that data yet -- e.g. right after placing fixed bolts.
+function perCaseBearingTicks(pts) {
+  const d = lastResult.data;
+  if (!d || !d.per_case || !d.per_case.length || !d.bolts || d.bolts.length !== pts.length) return null;
+  if (!d.per_case[0].bolt_dirs) return null;
+  return d.per_case.map(pc => {
+    const idx = state.forces.findIndex(f => f.name === pc.name);
+    return { color: caseColor(idx >= 0 ? idx : 0), dirs: pc.bolt_dirs };
+  });
+}
+function drawTick(sx, sy, u, r, color) {
+  const len = Math.max(10, r * 1.6);
+  ctx.strokeStyle = color; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(sx + u[0] * r, sy - u[1] * r); ctx.lineTo(sx + u[0] * (r + len), sy - u[1] * (r + len)); ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(sx + u[0] * (r + len), sy - u[1] * (r + len), 1.5, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawBolts() {
+  const r = boltRadiusPx();
+  const pts = layoutPts();
+  const bolts = layoutBolts();
+  const govIdx = governingBoltIndex();
+  const caseTicks = pts.length ? perCaseBearingTicks(pts) : null;
+  const fallbackDirs = (!caseTicks && pts.length) ? boltBearingDirs(pts, governingCase()) : null;
+  const inLayout = new Set();
+
+  bolts.forEach((b, i) => {
+    const [sx, sy] = worldToScreen(b.x, b.y);
+    const bad = boltIsBad(i) || (b.fixed && state.badFixed.includes(fixedIndexAt(b.x, b.y)));
+    const fi = b.fixed ? fixedIndexAt(b.x, b.y) : -1;
+    if (fi >= 0) inLayout.add(fi);
+    // bearing ticks first, so the marker sits on top of them
+    if (caseTicks) {
+      caseTicks.forEach(ct => { if (ct.dirs[i]) drawTick(sx, sy, ct.dirs[i], r, ct.color); });
+    } else if (fallbackDirs && fallbackDirs[i]) {
+      drawTick(sx, sy, fallbackDirs[i], r, C.bearing);
+    }
+    if (b.fixed) {
+      drawFixedMarker(sx, sy, Math.max(4, r), bad ? C.bad : C.fixed);
+    } else {
+      ctx.fillStyle = bad ? C.badFill : C.boltFill;
+      ctx.strokeStyle = bad ? C.bad : C.bolt;
+      ctx.lineWidth = bad ? 2 : 1.2;
+      ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    if (i === govIdx) {
+      ctx.strokeStyle = C.gov; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.arc(sx, sy, r + 4, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (i === state.hoverBolt) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(sx, sy, r + 7, 0, Math.PI * 2); ctx.stroke();
+    }
+    // every bolt in the layout is numbered by its layout index, matching the
+    // per-bolt table (B1..); the marker style says whether it is fixed
+    ctx.fillStyle = bad ? C.bad : (b.fixed ? C.fixed : C.label);
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText(`${i + 1}`, sx + r + 3, sy - r - 1);
+  });
+
+  // fixed bolts that are not part of the displayed layout (placed after a run):
+  // shown dashed so it is obvious they are not in the numbers yet
+  state.fixedBolts.forEach((b, j) => {
+    if (inLayout.has(j)) return;
+    const [sx, sy] = worldToScreen(b.x, b.y);
+    ctx.setLineDash([3, 2]);
+    drawFixedMarker(sx, sy, Math.max(4, r), state.badFixed.includes(j) ? C.bad : C.fixed);
+    ctx.setLineDash([]);
+    ctx.fillStyle = C.fixed; ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText(`F${j + 1}`, sx + r + 3, sy - r - 1);
+  });
+}
+
+// Hollow circle with a cross through it, at the bolt's real radius -- deliberately
+// unlike the filled optimizer bolts so a pinned bolt reads at a glance.
+function drawFixedMarker(sx, sy, r, color) {
+  ctx.strokeStyle = color; ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.stroke();
+  const c = r * 1.4;
+  ctx.beginPath();
+  ctx.moveTo(sx - c, sy); ctx.lineTo(sx + c, sy);
+  ctx.moveTo(sx, sy - c); ctx.lineTo(sx, sy + c);
+  ctx.stroke();
+}
+
+function drawForces() {
+  const r = boltRadiusPx();
+  const boltPx = layoutPts().map(p => worldToScreen(p[0], p[1]));
+  ctx.font = '12px system-ui, sans-serif';
+  state.forces.forEach((f, i) => {
+    if (f.x == null || f.y == null) return;
+    const active = (state.mode === 'force' && state.pickCase === i);
+    const col = active ? C.forceActive : caseColor(i);
+    const [sx, sy] = worldToScreen(f.x, f.y);
+    const ang = (f.angle || 0) * Math.PI / 180;
+    const hx = Math.cos(ang), hy = -Math.sin(ang);
+    const arrowLen = 44;
+    const ex = sx + hx * arrowLen, ey = sy + hy * arrowLen;
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = active ? 2.5 : 1.8;
+    ctx.beginPath(); ctx.arc(sx, sy, active ? 4.5 : 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - hx * 9 - hy * 4.5, ey - hy * 9 + hx * 4.5);
+    ctx.lineTo(ex - hx * 9 + hy * 4.5, ey - hy * 9 - hx * 4.5);
+    ctx.closePath(); ctx.fill();
+    // label: try a few placements around the tip, keep the first that clears every bolt marker
+    const text = `${f.name || `Case ${i + 1}`}  ${fmt(f.mag || 0, 0)} @ ${fmt(f.angle || 0, 0)}°`;
+    const tw = ctx.measureText(text).width + 8, th = 16;
+    const cands = [
+      [ex + hx * 8 + (hx < -0.2 ? -tw : 0), ey + hy * 8 - th / 2],
+      [ex - tw / 2, ey - th - 8], [ex - tw / 2, ey + 8], [ex - tw - 8, ey - th / 2], [ex + 8, ey - th / 2],
+    ];
+    let place = cands[0];
+    for (const c of cands) {
+      const clear = boltPx.every(([bx, by]) => !(bx + r + 2 > c[0] && bx - r - 2 < c[0] + tw && by + r + 2 > c[1] && by - r - 2 < c[1] + th));
+      if (clear) { place = c; break; }
+    }
+    ctx.fillStyle = 'rgba(27,29,33,0.75)';
+    ctx.fillRect(place[0], place[1], tw, th);
+    ctx.fillStyle = col;
+    ctx.fillText(text, place[0] + 4, place[1] + 12);
+  });
+}
+
+function drawScaleBar() {
+  if (!(view.scale > 0) || !Number.isFinite(view.scale)) return;
+  const target = 110; // px
+  const raw = target / view.scale;
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  const nice = [1, 2, 5, 10].map(m => m * pow).reduce((a, b) => Math.abs(b - raw) < Math.abs(a - raw) ? b : a);
+  const px = nice * view.scale;
+  const x0 = cw - px - 14, y0 = ch - 14;
+  ctx.strokeStyle = '#d5d8dd'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0 - 4); ctx.lineTo(x0, y0); ctx.lineTo(x0 + px, y0); ctx.lineTo(x0 + px, y0 - 4);
+  ctx.stroke();
+  ctx.fillStyle = '#d5d8dd'; ctx.font = '11px system-ui, sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(`${fmt(nice, nice < 1 ? 2 : 0)} ${effectiveUnits()}`, x0 + px / 2, y0 - 7);
+  ctx.textAlign = 'left';
+}
+
+function fmt(v, d) { return Number.isFinite(v) ? v.toFixed(d) : '—'; }
+
+// The bolt group currently on screen, in layout order. After a run that is
+// state.bolts; before one it is just the user-placed bolts, which are a
+// perfectly good bolt group to evaluate.
+function layoutPts() {
+  if (state.bolts.length) return state.bolts;
+  return state.fixedBolts.map(b => [b.x, b.y]);
+}
+
+function layoutBolts() {
+  if (state.bolts.length) return state.bolts.map((p, i) => ({ x: p[0], y: p[1], fixed: !!state.boltFixed[i] }));
+  return state.fixedBolts.map(b => ({ x: b.x, y: b.y, fixed: true }));
+}
+
+function boltIsBad(i) { const s = state.boltStatus[i]; return !!(s && s.bad); }
+
+// Fixed bolts are identified by position, not by slot: after a run slots 0..F-1
+// are the pinned bolts in list order, but adding/removing entries in the list
+// (or an alternative with a different flag pattern) would desync any
+// index-based mapping.
+function fixedIndexAt(x, y) {
+  for (let j = 0; j < state.fixedBolts.length; j++) {
+    const b = state.fixedBolts[j];
+    if (Math.abs(b.x - x) < 1e-9 && Math.abs(b.y - y) < 1e-9) return j;
+  }
+  return -1;
+}
+// Layout index (0-based) of fixed bolt j, or -1 when it is not in the displayed layout.
+function layoutIndexOfFixed(j) {
+  const b = state.fixedBolts[j];
+  if (!b) return -1;
+  return layoutBolts().findIndex(p => p.fixed && Math.abs(p.x - b.x) < 1e-9 && Math.abs(p.y - b.y) < 1e-9);
+}
+
+function partLoopIndex() {
+  const k = Object.keys(state.roles).find(k => state.roles[k] === 'part');
+  return k === undefined ? null : parseInt(k);
+}
+
+function governingCase() {
+  const named = state.forces.find(f => f.name === lastResult.governingCase && f.x != null);
+  return named || state.forces.find(f => f.x != null) || null;
+}
+
+function governingBoltIndex() {
+  const d = lastResult.data;
+  if (!d || !d.per_case || !d.governing_case) return -1;
+  const pc = d.per_case.find(c => c.name === d.governing_case);
+  if (!pc) return -1;
+  // only meaningful while the displayed bolts are the scored ones
+  return (d.bolts && d.bolts.length === layoutPts().length) ? pc.governing_bolt_index : -1;
+}
+
+// Elastic/polar method, mirroring app/optimizer.batched_bolt_loads -- only the
+// unit *bearing* direction is needed here, for the canvas ticks.  The resultant
+// is the force the plate puts on the bolt; the bolt pushes back the other way,
+// and that is the direction tear-out happens in, so the returned vector is the
+// negated resultant (matching bearing_clear_distance in app/optimizer.py).
+function boltBearingDirs(bolts, f) {
+  if (!f || !bolts.length || f.x == null) return null;
+  const ang = (f.angle || 0) * Math.PI / 180, mag = f.mag || 0;
+  const fx = mag * Math.cos(ang), fy = mag * Math.sin(ang);
+  const n = bolts.length;
+  const cx = bolts.reduce((a, p) => a + p[0], 0) / n;
+  const cy = bolts.reduce((a, p) => a + p[1], 0) / n;
+  let J = 0;
+  bolts.forEach(p => { J += (p[0] - cx) ** 2 + (p[1] - cy) ** 2; });
+  J = Math.max(J, 1e-9);
+  const M = (f.x - cx) * fy - (f.y - cy) * fx;
+  return bolts.map(p => {
+    const rx = p[0] - cx, ry = p[1] - cy;
+    const vx = fx / n + (M / J) * (-ry);
+    const vy = fy / n + (M / J) * (rx);
+    const L = Math.hypot(vx, vy);
+    if (!(L > 0)) return null;
+    return [-vx / L, -vy / L];
+  });
+}
+
+// The highlighted part area must equal what app/geometry.py calls legal before
+// the edge-clearance shrink: the part polygon MINUS the union of every loop
+// inside it. Punch the holes out for real, on an offscreen canvas.
+let _maskCanvas = null;
+function fillPartRegion(outer, holes, style) {
+  if (!_maskCanvas) _maskCanvas = document.createElement('canvas');
+  if (_maskCanvas.width !== canvas.width || _maskCanvas.height !== canvas.height) {
+    _maskCanvas.width = canvas.width;
+    _maskCanvas.height = canvas.height;
+  }
+  const m = _maskCanvas.getContext('2d');
+  m.setTransform(1, 0, 0, 1, 0, 0);
+  m.clearRect(0, 0, _maskCanvas.width, _maskCanvas.height);
+  m.setTransform(dpr, 0, 0, dpr, 0, 0);
+  m.globalCompositeOperation = 'source-over';
+  m.fillStyle = style;
+  m.beginPath(); ringPath(m, outer); m.fill();
+  m.globalCompositeOperation = 'destination-out';
+  holes.forEach(h => { m.beginPath(); ringPath(m, h); m.fill(); });
+  m.globalCompositeOperation = 'source-over';
+  ctx.drawImage(_maskCanvas, 0, 0, cw, ch);
+}
+
+function ringPath(c, coords) {
+  coords.forEach((p, i) => { const [sx, sy] = worldToScreen(p[0], p[1]); i ? c.lineTo(sx, sy) : c.moveTo(sx, sy); });
+  c.closePath();
+}
+function drawRing(coords) {
+  coords.forEach((p, i) => { const [sx, sy] = worldToScreen(p[0], p[1]); i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); });
+}
+
+function pointInPoly(pt, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1];
+    const xj = poly[j][0], yj = poly[j][1];
+    const intersect = ((yi > pt[1]) !== (yj > pt[1])) &&
+      (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi + 1e-15) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function loopArea(loop) {
+  let a = 0;
+  for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) a += loop[j][0] * loop[i][1] - loop[i][0] * loop[j][1];
+  return Math.abs(a) / 2;
+}
+
+// A loop counts as a hole of `idx` when most of its vertices are inside it --
+// the same "fully inside" rule app/geometry.py applies with shapely. This is
+// pure geometry (role-independent), so it can be cached by index alone.
+const _holesCache = new Map();
+function holeIndicesOfLoop(idx) {
+  if (_holesCache.has(idx)) return _holesCache.get(idx);
+  const outer = state.loops[idx];
+  const holes = [];
+  state.loops.forEach((loop, i) => {
+    if (i === idx) return;
+    let inside = 0;
+    loop.forEach(p => { if (pointInPoly(p, outer)) inside++; });
+    if (inside > loop.length / 2) holes.push(i);
+  });
+  _holesCache.set(idx, holes);
+  return holes;
+}
+// Loops to punch out of the part fill: real holes only. A keepout is solid
+// material (drawn on top in its own style) and an ignore loop has no
+// geometric effect at all -- neither is subtracted from the part highlight.
+function holesOfLoop(idx) {
+  return holeIndicesOfLoop(idx)
+    .filter(i => state.roles[i] !== 'keepout' && state.roles[i] !== 'ignore')
+    .map(i => state.loops[i]);
+}
+
+// ---------------------------------------------------------------------------
+// Mouse: zoom, pan, bolt drag, hover, pick
+// ---------------------------------------------------------------------------
+let dragging = false, dragStart = null, spaceDown = false;
+let panCandidate = null;   // left button pressed on empty canvas; becomes a pan once it moves
+let boltDrag = null;       // {i, fixed, moved}
+let suppressClick = false;
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const [wx, wy] = screenToWorld(mx, my);
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  view.scale *= factor;
+  const [nsx, nsy] = worldToScreen(wx, wy);
+  view.ox += mx - nsx;
+  view.oy -= (my - nsy);
+  draw();
+}, { passive: false });
+
+function hitBolt(mx, my) {
+  const rad = Math.max(boltRadiusPx(), 8);
+  let best = null, bestD = rad;
+  layoutBolts().forEach((b, i) => {
+    const [sx, sy] = worldToScreen(b.x, b.y);
+    const d = Math.hypot(sx - mx, sy - my);
+    if (d <= bestD) { bestD = d; best = { i, fixed: b.fixed }; }
+  });
+  return best;
+}
+
+function moveBolt(i, x, y) {
+  if (state.bolts.length) {
+    const j = state.boltFixed[i] ? fixedIndexAt(state.bolts[i][0], state.bolts[i][1]) : -1;
+    state.bolts[i] = [x, y];
+    if (j >= 0) state.fixedBolts[j] = { x, y };
+  } else if (i < state.fixedBolts.length) {
+    state.fixedBolts[i] = { x, y };
+  }
+}
+
+canvas.addEventListener('mousedown', e => {
+  // a number input keeps keyboard focus otherwise, so Delete/Esc/Space would go to it
+  if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  suppressClick = false;   // a gesture released off-canvas never fired its click; don't swallow the next one
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (e.button === 1 || (e.button === 0 && spaceDown)) {
+    dragging = true;
+    dragStart = [e.clientX, e.clientY, view.ox, view.oy];
+    e.preventDefault();
+    return;
+  }
+  if (e.button === 0) {
+    const hit = hitBolt(mx, my);
+    if (hit) {
+      boltDrag = { i: hit.i, fixed: hit.fixed, moved: false };
+      canvas.style.cursor = 'grabbing';
+    } else {
+      panCandidate = [e.clientX, e.clientY, view.ox, view.oy];
+    }
+    e.preventDefault();
+  }
+});
+
+async function finishBoltDrag() {
+  const d = boltDrag;
+  boltDrag = null;
+  canvas.style.cursor = '';
+  if (!d || !d.moved) return;
+  suppressClick = true;           // don't let this gesture also fire a mode click
+  state.dragged.add(d.i);
+  if (d.fixed) {
+    renderFixedBolts();
+    await pushFixedBolts();       // the pinned list follows the bolt
+  }
+  await commitLayout();
+}
+
+window.addEventListener('mouseup', () => {
+  if (dragging && panCandidate) suppressClick = true;
+  dragging = false; panCandidate = null;
+  if (boltDrag) finishBoltDrag();
+});
+
+canvas.addEventListener('mouseleave', () => {
+  let changed = state.hoverLoop != null || state.hoverSnap || state.hoverBolt != null;
+  state.hoverLoop = null; state.hoverSnap = null; state.hoverBolt = null;
+  if (changed) draw();
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (boltDrag) {
+    const [dx, dy] = screenToWorld(mx, my);
+    boltDrag.moved = true;
+    moveBolt(boltDrag.i, dx, dy);
+    draw();
+    scheduleEvaluate();
+    return;
+  }
+  if (panCandidate && !dragging) {
+    if (Math.hypot(e.clientX - panCandidate[0], e.clientY - panCandidate[1]) > 4) {
+      dragging = true; dragStart = panCandidate;
+      canvas.style.cursor = 'move';
+    }
+  }
+  if (dragging) {
+    view.ox = dragStart[2] + (e.clientX - dragStart[0]);
+    view.oy = dragStart[3] - (e.clientY - dragStart[1]);
+    draw();
+    return;
+  }
+  const hit = hitBolt(mx, my);
+  const hb = hit ? hit.i : null;
+  let needDraw = hb !== state.hoverBolt;
+  state.hoverBolt = hb;
+  canvas.style.cursor = hit ? 'grab' : (isPickMode() || isRoleMode(state.mode) ? 'crosshair' : '');
+  const [wx, wy] = screenToWorld(mx, my);
+  if (isRoleMode(state.mode)) {
+    // prefer the smallest (innermost) loop containing the point, so hovering
+    // inside a hole targets the hole rather than the outer plate
+    let found = null, foundArea = Infinity;
+    state.loops.forEach((loop, i) => {
+      if (pointInPoly([wx, wy], loop)) {
+        const a = loopArea(loop);
+        if (a < foundArea) { foundArea = a; found = i; }
+      }
+    });
+    if (found !== state.hoverLoop) { state.hoverLoop = found; needDraw = true; }
+  } else if (isPickMode()) {
+    let best = null, bestD = 10 / view.scale; // 10 screen px in world units
+    state.snap_points.forEach(p => {
+      const d = Math.hypot(p.x - wx, p.y - wy);
+      if (d < bestD) { bestD = d; best = p; }
+    });
+    if (best !== state.hoverSnap) { state.hoverSnap = best; needDraw = true; }
+  }
+  if (needDraw) draw();
+});
+
+canvas.addEventListener('click', e => {
+  // A drag (bolt or pan) ends with a click event too; swallow it.
+  if (suppressClick) { suppressClick = false; return; }
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const [wx, wy] = screenToWorld(mx, my);
+  if (state.mode === 'part') {
+    if (state.hoverLoop != null) selectLoop(state.hoverLoop, state.roles[state.hoverLoop] === 'part' ? 'none' : 'part');
+  } else if (state.mode === 'keepout') {
+    if (state.hoverLoop != null) selectLoop(state.hoverLoop, state.roles[state.hoverLoop] === 'keepout' ? 'none' : 'keepout');
+  } else if (state.mode === 'ignore') {
+    if (state.hoverLoop != null) selectLoop(state.hoverLoop, state.roles[state.hoverLoop] === 'ignore' ? 'none' : 'ignore');
+  } else if (state.mode === 'datum') {
+    if (state.hoverSnap) setDatum(state.hoverSnap.x, state.hoverSnap.y);
+    else toast('Click a snap point (hole centre or vertex) for the datum.', 'warn');
+  } else if (state.mode === 'force') {
+    if (state.hoverSnap) setForcePoint(state.hoverSnap.x, state.hoverSnap.y);
+    else toast('Click a snap point (hole centre or vertex) for the force application point.', 'warn');
+  } else if (state.mode === 'placebolt') {
+    const p = state.hoverSnap || { x: wx, y: wy };
+    addFixedBolt(p.x, p.y);
+  }
+});
+
+function isTypingTarget(t) {
+  return t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+}
+window.addEventListener('keydown', e => {
+  if (isTypingTarget(e.target)) return;
+  if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
+  else if (e.key === 'Escape') {
+    if (boltDrag) { boltDrag = null; canvas.style.cursor = ''; }
+    if (state.mode !== 'none') setMode('none');
+  } else if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (state.hoverBolt != null) {
+      const b = layoutBolts()[state.hoverBolt];
+      if (b && b.fixed) {
+        const j = fixedIndexAt(b.x, b.y);
+        if (j >= 0) { removeFixedBolt(j); e.preventDefault(); }
+      } else if (b) {
+        toast('Only fixed bolts can be deleted. Use "Re-optimize around this" with a lower N to drop a bolt.', 'info');
+      }
+    }
+  }
+});
+window.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
+window.addEventListener('blur', () => { spaceDown = false; });
+
+// ---------------------------------------------------------------------------
+// Modes and status
+// ---------------------------------------------------------------------------
+const MODE_TIPS = {
+  none: '', part: 'click the loop that is the part outline (click again to clear)',
+  keepout: 'click loops to toggle them as keepouts (solid, no bolts)',
+  ignore: 'click loops to toggle them as ignored (construction geometry, no effect)',
+  datum: 'click a hole centre or vertex',
+  force: 'click the application point for the highlighted case', placebolt: 'click to place a fixed bolt (snaps to hole centres)',
+};
+function setMode(m) {
+  state.mode = m;
+  state.hoverLoop = null; state.hoverSnap = null;
+  $('modeLabel').textContent = m === 'placebolt' ? 'place bolt' : m;
+  $('modeTip').textContent = MODE_TIPS[m] ? `— ${MODE_TIPS[m]}` : '';
+  ['modeSelectPart', 'modeSelectKeepout', 'modeSelectIgnore', 'modeDatum', 'modePlaceBolt'].forEach(id => $(id).classList.remove('active'));
+  const map = { part: 'modeSelectPart', keepout: 'modeSelectKeepout', ignore: 'modeSelectIgnore', datum: 'modeDatum', placebolt: 'modePlaceBolt' };
+  if (map[m]) $(map[m]).classList.add('active');
+  if (m !== 'force') state.pickCase = null;
+  const hint = $('modeHint');
+  hint.textContent = MODE_TIPS[m] ? `${MODE_TIPS[m]} — Esc to exit` : '';
+  hint.style.display = MODE_TIPS[m] ? 'block' : 'none';
+  renderForces();
+  draw();
+}
+$('modeSelectPart').onclick = () => setMode(state.mode === 'part' ? 'none' : 'part');
+$('modeSelectKeepout').onclick = () => setMode(state.mode === 'keepout' ? 'none' : 'keepout');
+$('modeSelectIgnore').onclick = () => setMode(state.mode === 'ignore' ? 'none' : 'ignore');
+$('modeDatum').onclick = () => setMode(state.mode === 'datum' ? 'none' : 'datum');
+$('modePlaceBolt').onclick = () => setMode(state.mode === 'placebolt' ? 'none' : 'placebolt');
+$('clearFixedBtn').onclick = () => {
+  state.fixedBolts = [];
+  state.badFixed = [];
+  state.boltFixed = state.boltFixed.map(() => false);
+  renderFixedBolts();
+  pushFixedBolts().then(() => { if (state.bolts.length) commitLayout(currentSource()); });
+  draw();
+};
+
+function effectiveUnits() { return $('unitsOverride').value || state.units || 'unknown'; }
+
+function readyForces() { return state.forces.filter(f => f.x != null && f.y != null); }
+
+// What is still missing before the optimizer can run; drives the status line,
+// the step summaries and the Run button.
+function updateStatus() {
+  const missing = [];
+  if (!state.loaded) missing.push('Load a DXF');
+  else {
+    if (partLoopIndex() == null) missing.push('Select the part outline');
+    if (!state.datum) missing.push('Pick a datum');
+    if (!readyForces().length) missing.push('Add a force case and pick its point');
+    if (state.badFixed.length) missing.push('Fix the red fixed bolt(s)');
+  }
+  const nMin = parseInt($('nMin').value), nMax = parseInt($('nMax').value);
+  if (Number.isFinite(nMin) && Number.isFinite(nMax) && nMin > nMax) missing.push('N min must not exceed N max');
+  const line = $('statusLine');
+  if (missing.length) {
+    line.className = 'need';
+    line.textContent = 'Before you can run: ' + missing.join(' · ');
+  } else {
+    line.className = 'ready';
+    line.textContent = state.running ? 'Optimizer running…' : 'Ready to run.' +
+      (effectiveUnits() === 'unknown' ? ' (units unknown — set the override so the export is labelled)' : '');
+  }
+  const run = $('runBtn');
+  run.disabled = missing.length > 0 || state.running;
+  run.title = missing.length ? missing.join('; ') : 'Run the batched search';
+
+  // step summaries
+  const units = effectiveUnits();
+  const su = $('sumLoad');
+  su.textContent = state.loaded ? `${state.loops.length} loops · ${units}` : 'no file';
+  su.className = 'sum' + (!state.loaded ? '' : units === 'unknown' ? ' bad' : ' ok');
+  const pi = partLoopIndex(), ko = Object.keys(state.roles).filter(k => state.roles[k] === 'keepout');
+  const ss = $('sumSelect');
+  ss.textContent = pi == null ? 'no part' : `part: loop ${pi}` + (ko.length ? ` · ${ko.length} keepout` : '');
+  ss.className = 'sum' + (pi == null ? '' : ' ok');
+  const nf = readyForces().length;
+  const sd = $('sumDatum');
+  sd.textContent = (state.datum ? 'datum set' : 'no datum') + ` · ${nf} case${nf === 1 ? '' : 's'}`;
+  sd.className = 'sum' + (state.datum && nf ? ' ok' : '');
+  const sb = $('sumBolts');
+  sb.textContent = state.fixedBolts.length ? `${state.fixedBolts.length} fixed` : 'none';
+  sb.className = 'sum' + (state.badFixed.length ? ' bad' : '');
+  $('sumSettings').textContent = `clr ${$('edgeClearance').value} · sp ${$('minSpacing').value} · d ${$('boltDiameter').value} · ceiling ${$('loadCeiling').value}`;
+  $('unitsEffective').textContent = units + ($('unitsOverride').value ? ' (override)' : state.loaded ? ' (from DXF)' : '');
+  $('unitsEffective').style.color = units === 'unknown' ? 'var(--warn)' : '';
+  document.querySelectorAll('.unit.u').forEach(el => el.textContent = units === 'unknown' ? '' : units);
+}
+
+// ---------------------------------------------------------------------------
+// Feedback: toasts and busy indicator
+// ---------------------------------------------------------------------------
+function toast(msg, kind = 'err', ms = 7000) {
+  if (!msg) return;
+  const box = $('toasts');
+  // collapse an identical message that is already showing
+  Array.from(box.children).forEach(t => { if (t.textContent === msg) t.remove(); });
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.textContent = msg;
+  el.title = 'click to dismiss';
+  el.onclick = () => el.remove();
+  box.appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+function showError(msg) { if (msg) toast(msg, 'err'); }
+
+let _busyCount = 0;
+function busy(label) {
+  _busyCount++;
+  $('busyText').textContent = label || 'Working…';
+  $('busy').style.display = 'flex';
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    _busyCount = Math.max(0, _busyCount - 1);
+    if (!_busyCount) $('busy').style.display = 'none';
+  };
+}
+// Show the busy indicator only when a request takes noticeably long (the
+// geometry field build does; a warm /evaluate does not).
+async function withBusy(label, promise, delay = 250) {
+  let release = null;
+  const timer = setTimeout(() => { release = busy(label); }, delay);
+  try { return await promise; }
+  finally { clearTimeout(timer); if (release) release(); }
+}
+
+async function api(path, body, method) {
+  const res = await fetch(path, body === undefined
+    ? { method: method || 'GET' }
+    : { method: method || 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try { detail = (await res.json()).detail || detail; } catch (_) { /* not json */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Backend calls: selection, datum, fixed bolts, forces, settings
+// ---------------------------------------------------------------------------
+async function selectLoop(idx, role) {
+  try {
+    const data = await api('/select', { loop_index: idx, role });
+    state.roles = data.roles;
+    updateLabels();
+    draw();
+    await afterGeometryChange();
+  } catch (e) { showError(e.message); }
+}
+
+async function setDatum(x, y) {
+  try {
+    const data = await api('/datum', { x, y });
+    state.datum = { x: data.datum[0], y: data.datum[1] };
+    renderFixedBolts();
+    updateLabels();
+    setMode('none');
+    draw();
+    if (hasLayout()) loadResult();
+  } catch (e) { showError(e.message); }
+}
+
+// Same contract as the force cases: the client owns the list and re-posts the
+// whole thing, and the backend validates every entry against the legal region.
+async function pushFixedBolts() {
+  try {
+    const res = await fetch('/fixed-bolts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bolts: state.fixedBolts.map(b => ({ x: b.x, y: b.y })) })
+    });
+    if (!res.ok) {
+      const detail = (await res.json()).detail;
+      const m = /Fixed bolt (\d+)/.exec(detail || '');
+      state.badFixed = m ? [parseInt(m[1]) - 1] : [];
+      renderFixedBolts();
+      draw();
+      throw new Error(detail);
+    }
+    state.badFixed = [];
+    renderFixedBolts();
+    draw();
+  } catch (e) { showError(e.message); }
+  updateStatus();
+}
+
+function hasLayout() { return state.bolts.length > 0 || (lastResult.data && state.fixedBolts.length > 0); }
+
+function addFixedBolt(x, y) {
+  state.fixedBolts.push({ x, y });
+  if (state.bolts.length) {
+    // after a run a new pinned bolt joins the displayed group at once, so the
+    // numbers follow it instead of waiting for the next run
+    state.bolts.push([x, y]);
+    state.boltFixed.push(true);
+  }
+  renderFixedBolts();
+  pushFixedBolts().then(() => { if (state.bolts.length) commitLayout('manual'); });
+  draw();
+}
+
+function removeFixedBolt(j) {
+  const b = state.fixedBolts[j];
+  if (!b) return;
+  if (state.bolts.length) {
+    const i = state.bolts.findIndex((p, k) => state.boltFixed[k] && Math.abs(p[0] - b.x) < 1e-9 && Math.abs(p[1] - b.y) < 1e-9);
+    if (i >= 0) { state.bolts.splice(i, 1); state.boltFixed.splice(i, 1); state.boltStatus = []; }
+  }
+  state.fixedBolts.splice(j, 1);
+  state.badFixed = [];
+  renderFixedBolts();
+  pushFixedBolts().then(() => {
+    if (state.bolts.length) commitLayout('manual');
+    else if (lastResult.data) { lastResult.data = null; clearResultsUI('Layout cleared.'); }
+  });
+  state.hoverBolt = null;
+  draw();
+}
+
+function renderFixedBolts() {
+  const el = $('fixedList');
+  updateStatus();
+  if (!state.fixedBolts.length) { el.innerHTML = '<div class="hint">no fixed bolts</div>'; return; }
+  const dx = state.datum ? state.datum.x : 0, dy = state.datum ? state.datum.y : 0;
+  let html = `<table class="tbl"><tr><th>#</th><th class="num">x${state.datum ? '' : ' (abs)'}</th><th class="num">y${state.datum ? '' : ' (abs)'}</th><th></th></tr>`;
+  state.fixedBolts.forEach((b, i) => {
+    const bad = state.badFixed.includes(i);
+    const li = layoutIndexOfFixed(i);
+    html += `<tr${bad ? ' class="bad"' : ''}><td title="${li >= 0 ? 'bolt ' + (li + 1) + ' of the displayed layout' : 'not in the displayed layout yet'}">${li >= 0 ? 'B' + (li + 1) : 'F' + (i + 1)}</td>` +
+      `<td class="num">${(b.x - dx).toFixed(2)}</td><td class="num">${(b.y - dy).toFixed(2)}</td>` +
+      `<td><button class="small" data-fx="${i}" title="Remove">×</button></td></tr>`;
+  });
+  el.innerHTML = html + '</table>';
+  el.querySelectorAll('button[data-fx]').forEach(btn => { btn.onclick = () => removeFixedBolt(parseInt(btn.dataset.fx)); });
+}
+
+// --- force cases ---
+async function pushForces() {
+  const body = {
+    forces: readyForces().map(f => {
+      const ang = (f.angle || 0) * Math.PI / 180;
+      const mag = f.mag || 0;
+      return { name: f.name, x: f.x, y: f.y, fx: mag * Math.cos(ang), fy: mag * Math.sin(ang) };
+    })
+  };
+  try { await api('/forces', body); } catch (e) { showError(e.message); }
+  updateStatus();
+}
+
+function addCase() {
+  state.forces.push({ name: `Case ${state.forces.length + 1}`, x: null, y: null, mag: 1000, angle: 90 });
+  renderForces();
+  pushForces();
+  pickCasePoint(state.forces.length - 1);
+}
+
+function removeCase(i) {
+  state.forces.splice(i, 1);
+  if (state.pickCase === i) { state.pickCase = null; if (state.mode === 'force') setMode('none'); }
+  else if (state.pickCase != null && state.pickCase > i) state.pickCase--;
+  renderForces();
+  pushForces().then(() => { if (hasLayout()) loadResult(); });
+  draw();
+}
+
+function pickCasePoint(i) {
+  if (state.mode === 'force' && state.pickCase === i) { state.pickCase = null; setMode('none'); }
+  else { state.pickCase = i; setMode('force'); }
+  renderForces();
+  draw();
+}
+
+function renderForces() {
+  const el = $('forceList');
+  el.innerHTML = '';
+  if (!state.forces.length) { el.innerHTML = '<div class="hint">no cases — add one</div>'; updateStatus(); return; }
+  const dx = state.datum ? state.datum.x : 0, dy = state.datum ? state.datum.y : 0;
+  state.forces.forEach((f, i) => {
+    const picking = (state.mode === 'force' && state.pickCase === i);
+    const div = document.createElement('div');
+    div.className = 'caseRow' + (picking ? ' picking' : '');
+    div.innerHTML =
+      `<button class="rm small danger" title="Remove case">×</button>` +
+      `<span style="display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:4px;` +
+      `vertical-align:middle;background:${caseColor(i)}" title="case colour (arrow + bearing ticks)"></span>` +
+      `<div class="row"><input class="cname" type="text" value="${(f.name || '').replace(/"/g, '&quot;')}"></div>` +
+      `<div class="row"><label>Magnitude</label><input class="cmag" type="number" value="${f.mag}" min="0" step="10"></div>` +
+      `<div class="row"><label>Angle (deg)</label><input class="cang" type="number" value="${f.angle}" step="1"></div>` +
+      `<div class="row"><button class="pick${picking ? ' active' : ''}">${picking ? 'Picking…' : 'Pick point'}</button> ` +
+      `<span class="pt${f.x == null ? ' missing' : ''}">${f.x == null ? 'no point yet'
+        : `(${(f.x - dx).toFixed(2)}, ${(f.y - dy).toFixed(2)})${state.datum ? '' : ' abs'}`}</span></div>`;
+    div.querySelector('.rm').onclick = () => removeCase(i);
+    div.querySelector('.pick').onclick = () => pickCasePoint(i);
+    const changed = () => pushForces().then(() => { if (hasLayout()) loadResult(); });
+    div.querySelector('.cname').addEventListener('change', e => { f.name = e.target.value || `Case ${i + 1}`; changed(); draw(); });
+    div.querySelector('.cmag').addEventListener('change', e => { f.mag = parseFloat(e.target.value) || 0; changed(); draw(); });
+    div.querySelector('.cang').addEventListener('change', e => { f.angle = parseFloat(e.target.value) || 0; changed(); draw(); });
+    el.appendChild(div);
+  });
+  updateStatus();
+}
+$('addCaseBtn').onclick = addCase;
+
+async function setForcePoint(x, y) {
+  const i = state.pickCase;
+  if (i == null || !state.forces[i]) return;
+  state.forces[i].x = x;
+  state.forces[i].y = y;
+  await pushForces();
+  state.pickCase = null;
+  setMode('none');
+  updateLabels();
+  if (hasLayout()) loadResult();
+}
+
+function updateLabels() {
+  const partIdx = partLoopIndex();
+  $('partLabel').textContent = partIdx != null ? `loop ${partIdx}` : 'none';
+  const keepouts = Object.keys(state.roles).filter(k => state.roles[k] === 'keepout');
+  $('keepoutLabel').textContent = keepouts.length ? keepouts.map(k => `loop ${k}`).join(', ') : 'none';
+  const ignores = Object.keys(state.roles).filter(k => state.roles[k] === 'ignore');
+  $('ignoreLabel').textContent = ignores.length ? ignores.map(k => `loop ${k}`).join(', ') : 'none';
+  $('datumLabel').textContent = state.datum ? `(${state.datum.x.toFixed(2)}, ${state.datum.y.toFixed(2)}) drawing coords` : 'none';
+  updateStatus();
+}
+
+// --- load DXF ---
+$('fileInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const data = await withBusy('Parsing DXF…', (async () => {
+      const res = await fetch('/load-dxf', { method: 'POST', body: form });
+      if (!res.ok) throw new Error((await res.json()).detail);
+      return res.json();
+    })(), 0);
+    state.loops = data.loops;
+    state.open_chains = data.open_chains;
+    state.snap_points = data.snap_points;
+    state.units = data.units;
+    state.bbox = data.bbox;
+    state.loaded = true;
+    state.roles = {}; state.datum = null; state.forces = []; state.pickCase = null;
+    state.bolts = []; state.boltFixed = []; state.fixedBolts = []; state.badFixed = [];
+    state.boltStatus = []; state.dragged.clear(); state.region = null;
+    state.hoverLoop = null; state.hoverSnap = null; state.hoverBolt = null;
+    _holesCache.clear();
+    lastResult = { governingCase: null, data: null, source: null };
+    clearResultsUI();
+    setMode('none');
+    fitToView();
+    renderForces();
+    renderFixedBolts();
+    updateLabels();
+    draw();
+    if (fitPending) requestAnimationFrame(() => { resizeCanvas(); if (fitPending) { fitToView(); draw(); } });
+    const notes = [];
+    if (data.open_chains.length) notes.push(`${data.open_chains.length} open chain${data.open_chains.length === 1 ? '' : 's'} (red) could not be closed`);
+    (data.notes || []).forEach(n => notes.push(n));
+    $('loadNotes').textContent = `${file.name}: ${data.loops.length} closed loop${data.loops.length === 1 ? '' : 's'}` +
+      (notes.length ? ' · ' + notes.join(' · ') : '');
+    if (data.message) toast(data.message, 'warn', 15000);
+    else if (data.open_chains.length) toast(notes[0] + '. They are ignored unless they close.', 'warn', 15000);
+    if (data.units === 'unknown') toast('The DXF does not declare units — set the units override in step 1.', 'warn', 15000);
+    $('stepSelect').open = true;
+  } catch (e) { showError(e.message); }
+});
+
+function clearResultsUI(msg) {
+  $('resultsArea').innerHTML = `<div class="hint">${msg || 'No result yet. Run the optimizer, or place fixed bolts and drag them to score a layout by hand.'}</div>`;
+  $('perNArea').innerHTML = '';
+  $('altArea').innerHTML = '';
+  $('progressText').textContent = '';
+  $('runProgress').style.display = 'none';
+  $('sumResults').textContent = 'none yet';
+  $('sumResults').className = 'sum';
+  lastRun = { alternatives: [], perN: [], selected: 0, ceiling: null, stopped: false, info: null };
+}
+
+// --- settings ---
+async function pushSettings() {
+  const body = {
+    edge_clearance: parseFloat($('edgeClearance').value),
+    min_spacing: parseFloat($('minSpacing').value),
+    bolt_diameter: parseFloat($('boltDiameter').value),
+    bearing_enabled: $('bearingEnabled').checked,
+    load_ceiling: parseFloat($('loadCeiling').value),
+    n_min: parseInt($('nMin').value),
+    n_max: parseInt($('nMax').value),
+    seeds_per_n: parseInt($('seedsPerN').value),
+    use_gpu: $('useGpu').checked,
+    iterations: parseInt($('iterations').value),
+    units_override: $('unitsOverride').value || null,
+  };
+  for (const k of Object.keys(body)) if (typeof body[k] === 'number' && !Number.isFinite(body[k])) delete body[k];
+  try { await api('/settings', body); } catch (e) { showError(e.message); }
+  updateStatus();
+}
+const GEOMETRY_SETTINGS = ['edgeClearance', 'boltDiameter', 'bearingEnabled'];
+const SCORE_SETTINGS = ['minSpacing', 'loadCeiling', 'unitsOverride'];
+['edgeClearance', 'minSpacing', 'boltDiameter', 'bearingEnabled', 'loadCeiling', 'nMin', 'nMax', 'seedsPerN', 'iterations', 'unitsOverride', 'useGpu'].forEach(id => {
+  $(id).addEventListener('change', async () => {
+    await pushSettings();
+    if (GEOMETRY_SETTINGS.includes(id)) await afterGeometryChange();
+    else if (SCORE_SETTINGS.includes(id)) {
+      if (hasLayout()) loadResult();
+      if (id === 'loadCeiling') renderPerN();
+    }
+    draw();
+  });
+});
+
+// The legal region changed (part/keepout selection, clearance, ...): re-check
+// the fixed bolts, refresh the region overlay and re-score the shown layout.
+async function afterGeometryChange() {
+  if (state.fixedBolts.length) await pushFixedBolts();
+  if ($('showRegion').checked) await fetchRegion();
+  if (hasLayout()) await loadResult();
+  draw();
+}
+
+async function fetchRegion() {
+  if (partLoopIndex() == null) { state.region = null; return; }
+  try {
+    const data = await withBusy('Computing legal region…', api('/region'));
+    state.region = data.polygons;
+    if (data.empty) toast('Legal region is empty after clearance/keepout subtraction.', 'warn');
+  } catch (e) { state.region = null; showError(e.message); }
+}
+$('showRegion').addEventListener('change', async e => {
+  if (e.target.checked) await fetchRegion();
+  draw();
+});
+
+// ---------------------------------------------------------------------------
+// Run
+// ---------------------------------------------------------------------------
+let activeWs = null;
+let lastRun = { alternatives: [], perN: [], selected: 0, ceiling: null, stopped: false, info: null };
+let lastResult = { governingCase: null, data: null, source: null };
+
+function setRunning(running) {
+  state.running = running;
+  $('stopBtn').disabled = !running;
+  $('sumRun').textContent = running ? 'running…' : '';
+  updateStatus();
+}
+
+(async () => {
+  try {
+    const d = await api('/device');
+    $('deviceLabel').textContent = d.cuda_available ? `(${d.device_name})` : '(no CUDA — CPU only)';
+    $('useGpu').disabled = !d.cuda_available;
+  } catch (e) { /* non-fatal */ }
+})();
+
+$('runBtn').addEventListener('click', async () => {
+  if (state.running) return;
+  await pushSettings();
+  setRunning(true);
+  $('runProgress').style.display = 'block';
+  $('runProgress').value = 0;
+  $('progressText').textContent = 'starting…';
+  $('perNArea').innerHTML = '';
+  $('altArea').innerHTML = '';
+  lastRun = { alternatives: [], perN: [], selected: 0, ceiling: null, stopped: false, info: null };
+  state.boltStatus = [];
+  state.dragged.clear();
+  let releaseBusy = null;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/optimize`);
+  activeWs = ws;
+  const finish = () => {
+    if (releaseBusy) { releaseBusy(); releaseBusy = null; }
+    setRunning(false);
+    if (activeWs === ws) activeWs = null;
+  };
+  ws.onmessage = ev => {
+    let frame;
+    try { frame = JSON.parse(ev.data); } catch (err) { toast('Bad frame from server: ' + err.message); return; }
+    if (frame.status === 'error') {
+      if (frame.bad_fixed_bolts) { state.badFixed = frame.bad_fixed_bolts; renderFixedBolts(); draw(); }
+      toast(frame.message);
+      $('progressText').textContent = '';
+      $('runProgress').style.display = 'none';
+      finish();
+      return;
+    }
+    if (frame.status === 'building') {
+      if (!releaseBusy) releaseBusy = busy(frame.message || 'Building geometry fields…');
+      $('progressText').textContent = frame.message || 'building geometry fields…';
+      return;
+    }
+    if (frame.status === 'progress') {
+      if (releaseBusy) { releaseBusy(); releaseBusy = null; }
+      state.bolts = (frame.best_positions || []).map(p => [p[0], p[1]]);
+      state.boltFixed = state.bolts.map((_, i) => i < state.fixedBolts.length);
+      $('runProgress').value = (frame.iteration + 1) / frame.iterations;
+      $('progressText').textContent =
+        `iteration ${frame.iteration + 1}/${frame.iterations} · ${frame.batch_size} layouts alive · ` +
+        `best so far N=${frame.best_n}, peak ${fmt(frame.best_peak, 1)}`;
+      draw();
+    } else if (frame.status === 'done') {
+      finish();
+      $('runProgress').value = 1;
+      if (frame.result) {
+        state.bolts = frame.result.positions.map(p => [p[0], p[1]]);
+        state.boltFixed = frame.result.fixed_flags || state.bolts.map((_, i) => i < state.fixedBolts.length);
+        const ceiling = parseFloat($('loadCeiling').value);
+        lastRun = {
+          alternatives: frame.alternatives || [], perN: frame.per_n || [], selected: 0,
+          ceiling, stopped: !!frame.stopped,
+          info: { batch: frame.batch_size, device: frame.device, iterations: frame.iterations_run,
+                  fields: frame.field_build_s, clamped: frame.n_clamped, message: frame.message, ceilingMet: frame.ceiling_met },
+        };
+        $('progressText').textContent = (frame.stopped ? 'Stopped early. ' : frame.ceiling_met ? 'Done. ' : 'Done — ceiling not met. ') +
+          `${frame.batch_size} layouts, ${frame.iterations_run} iterations on ${frame.device}` +
+          (frame.field_build_s > 0.05 ? `, fields ${fmt(frame.field_build_s, 1)} s` : '') + '.';
+        if (frame.n_clamped) toast(frame.message, 'info', 10000);
+        draw();
+        loadResult().then(() => { renderPerN(); renderAlternatives(); });
+      } else {
+        $('progressText').textContent = frame.message || 'Stopped.';
+        toast(frame.message || 'No layout found.', 'warn');
+        renderPerN(frame.per_n);
+      }
+    }
+  };
+  ws.onerror = () => { toast('WebSocket error — is the server still running?'); finish(); };
+  ws.onclose = () => { finish(); $('runProgress').style.display = 'none'; };
+});
+
+$('stopBtn').addEventListener('click', () => {
+  if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+    activeWs.send(JSON.stringify({ cmd: 'stop' }));
+    $('stopBtn').disabled = true;
+    $('progressText').textContent += ' · stopping…';
+  }
+});
+window.addEventListener('beforeunload', () => { if (activeWs) { try { activeWs.close(); } catch (_) {} } });
+
+// ---------------------------------------------------------------------------
+// Results
+// ---------------------------------------------------------------------------
+function renderPerN(perN) {
+  perN = perN || lastRun.perN;
+  const el = $('perNArea');
+  if (!perN || !perN.length) { el.innerHTML = ''; return; }
+  const ceiling = parseFloat($('loadCeiling').value);
+  const winningN = lastResult.data && lastResult.source !== 'manual' ? lastResult.data.n : null;
+  let html = '<h4>Per-N summary (best of this run)</h4><table class="tbl">' +
+    '<tr><th>N</th><th class="num">best peak</th><th class="num">margin</th><th class="num">feasible</th><th></th></tr>';
+  perN.forEach(r => {
+    const ok = r.best_peak != null && r.best_peak <= ceiling;
+    const cls = (r.n === winningN) ? ' class="win"' : '';
+    const margin = r.best_peak == null ? '—' : fmt((ceiling - r.best_peak) / ceiling * 100, 1) + '%';
+    html += `<tr${cls}><td>${r.n}</td><td class="num">${r.best_peak == null ? '—' : fmt(r.best_peak, 1)}</td>` +
+      `<td class="num" style="color:${ok ? 'var(--ok)' : 'var(--bad)'}">${margin}</td>` +
+      `<td class="num">${r.feasible}/${r.seeds}</td><td>${ok ? '✓' : ''}</td></tr>`;
+  });
+  el.innerHTML = html + '</table>';
+}
+
+function renderAlternatives() {
+  const alts = lastRun.alternatives;
+  const el = $('altArea');
+  if (!alts || alts.length < 1) { el.innerHTML = ''; return; }
+  let html = `<h4>Alternatives at N=${alts[0].n} (distinct layouts, click to show)</h4><div id="altList">`;
+  alts.forEach((a, i) => {
+    const sel = (i === lastRun.selected && lastResult.source !== 'manual') ? ' sel' : '';
+    html += `<span class="alt"><button class="small${sel}" data-alt="${i}">#${i + 1}</button> ${fmt(a.peak_load, 1)}</span>`;
+  });
+  el.innerHTML = html + '</div>';
+  el.querySelectorAll('button[data-alt]').forEach(b => { b.onclick = () => showAlternative(parseInt(b.dataset.alt)); });
+}
+
+// Selecting an alternative also makes it the backend's current result, so the
+// results table and the DXF export follow whatever is on screen.
+async function showAlternative(i) {
+  try {
+    await api('/select-alternative', { index: i });
+    lastRun.selected = i;
+    state.dragged.clear();
+    state.boltStatus = [];
+    const a = lastRun.alternatives[i];
+    // copy: dragging must never edit the stored alternative in place
+    state.bolts = a.positions.map(p => [p[0], p[1]]);
+    state.boltFixed = a.fixed_flags || state.bolts.map((_, k) => k < state.fixedBolts.length);
+    draw();
+    await loadResult();
+    renderAlternatives();
+  } catch (e) { showError(e.message); }
+}
+
+// --- live evaluation of the displayed layout -------------------------------
+// While a bolt is being dragged the frontend posts the layout it is showing to
+// /evaluate, throttled to ~30 Hz with at most one request in flight: a newer
+// position supersedes any older one still waiting.
+const EVAL_MIN_MS = 33;
+let evalInFlight = false, evalQueued = false, evalTimer = null, lastEvalSent = 0;
+
+function scheduleEvaluate() {
+  if (evalInFlight) { evalQueued = true; return; }
+  const wait = EVAL_MIN_MS - (performance.now() - lastEvalSent);
+  if (wait > 0) {
+    if (!evalTimer) evalTimer = setTimeout(() => { evalTimer = null; scheduleEvaluate(); }, wait);
+    return;
+  }
+  sendEvaluate();
+}
+
+async function sendEvaluate() {
+  const bolts = layoutBolts();
+  if (!bolts.length) return;
+  evalInFlight = true;
+  lastEvalSent = performance.now();
+  try {
+    const data = await withBusy('Building geometry fields…', api('/evaluate', { bolts }), 400);
+    applyEvaluation(data);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    evalInFlight = false;
+    if (evalQueued) { evalQueued = false; scheduleEvaluate(); }
+  }
+}
+
+function applyEvaluation(data) {
+  const ceiling = (data.ceiling != null) ? data.ceiling : parseFloat($('loadCeiling').value);
+  state.boltStatus = (data.bolts || []).map((b, i) => {
+    const r = (data.per_bolt || [])[i] || {};
+    const over = (r.effective_load != null) && (r.effective_load > ceiling + 1e-9);
+    return { over, in_region: b.in_region !== false, spacing_ok: b.spacing_ok !== false,
+             bad: !!(over || b.in_region === false || b.spacing_ok === false) };
+  });
+  lastResult.governingCase = data.governing_case || null;
+  lastResult.data = data;
+  lastResult.source = data.source;
+  renderResult(data);
+  draw();
+}
+
+function currentSource() { return (lastResult.source && lastResult.source !== 'manual') ? lastResult.source : 'manual'; }
+
+// A drag has ended (or the pinned list changed): make what is on screen the
+// backend's current layout, so /result and the DXF export follow it.
+async function commitLayout(source) {
+  const bolts = layoutBolts();
+  if (!bolts.length) return;
+  try {
+    const data = await withBusy('Building geometry fields…', api('/layout', { bolts, source: source || 'manual' }), 400);
+    applyEvaluation(data);
+  } catch (e) { showError(e.message); }
+}
+
+async function revertLayout() {
+  try {
+    const data = await api('/layout/revert', undefined, 'POST');
+    state.bolts = data.positions.map(p => [p[0], p[1]]);
+    state.boltFixed = data.bolts.map(b => !!b.fixed);
+    state.dragged.clear();
+    const fixed = data.positions.filter((_, i) => data.bolts[i].fixed).map(p => ({ x: p[0], y: p[1] }));
+    // a dragged fixed bolt also moved the pinned list, so put that back too
+    if (fixed.length === state.fixedBolts.length) {
+      state.fixedBolts = fixed;
+      renderFixedBolts();
+      await pushFixedBolts();
+    }
+    applyEvaluation(data);
+    renderAlternatives();
+    renderPerN();
+  } catch (e) { showError(e.message); }
+}
+
+// Re-run the optimizer at the same bolt count with the bolts the user actually
+// dragged (plus any already-pinned ones) held where they are, and the rest free.
+async function reoptimizeAroundDragged() {
+  const bolts = layoutBolts();
+  const pin = bolts.filter((b, i) => b.fixed || state.dragged.has(i));
+  if (!pin.length) { toast('Nothing to re-optimize around — drag a bolt first.', 'info'); return; }
+  state.fixedBolts = pin.map(b => ({ x: b.x, y: b.y }));
+  state.badFixed = [];
+  renderFixedBolts();
+  await pushFixedBolts();
+  $('nMin').value = bolts.length;
+  $('nMax').value = bolts.length;
+  await pushSettings();
+  draw();
+  $('runBtn').click();
+}
+
+function sourceLabel(data) {
+  if (data.source === 'manual') {
+    const from = data.derived_from_source === 'alternative' ? 'alternative' : 'optimized result';
+    return `Manual layout (edited from ${from})`;
+  }
+  if (data.source === 'alternative') return `Alternative #${lastRun.selected + 1}`;
+  if (data.source === 'optimized') return lastRun.stopped ? 'Optimized result (stopped early)' : 'Optimized result';
+  return 'Layout';
+}
+
+function renderResult(data) {
+  const ceiling = data.ceiling;
+  const peak = data.peak_load;
+  const margin = ceiling > 0 ? (ceiling - peak) / ceiling * 100 : NaN;
+  const ok = data.ceiling_met && data.feasible !== false;
+  const units = data.units || effectiveUnits();
+  const rel = data.datum ? 'rel datum' : 'abs (no datum)';
+  const govPc = (data.per_case || []).find(c => c.name === data.governing_case);
+  const govBolt = govPc ? govPc.governing_bolt_index : -1;
+
+  let html = `<div><strong>${sourceLabel(data)}</strong> ` +
+    (data.feasible === false ? '<span class="badge bad">infeasible</span>' :
+      data.ceiling_met ? '<span class="badge ok">under ceiling</span>' : '<span class="badge bad">over ceiling</span>') +
+    '</div>';
+  if (data.feasible === false && data.infeasible_reason) html += `<div style="color:var(--bad);margin:2px 0">${data.infeasible_reason}</div>`;
+  html += '<div id="resHead">' +
+    `<div class="tile"><div class="l">bolts</div><div class="v">${data.n}</div><div class="s">${(data.bolts || []).filter(b => b.fixed).length} fixed</div></div>` +
+    `<div class="tile ${ok ? 'ok' : 'bad'}"><div class="l">peak${data.bearing ? ' eff' : ''}</div><div class="v">${fmt(peak, 1)}</div>` +
+      `<div class="s">${data.bearing && data.raw_peak_load != null ? 'raw ' + fmt(data.raw_peak_load, 1) : '&nbsp;'}</div></div>` +
+    `<div class="tile"><div class="l">ceiling</div><div class="v">${fmt(ceiling, 1)}</div><div class="s">per bolt</div></div>` +
+    `<div class="tile ${ok ? 'ok' : 'bad'}"><div class="l">margin</div><div class="v">${Number.isFinite(margin) ? (margin >= 0 ? '+' : '') + fmt(margin, 1) + '%' : '—'}</div>` +
+      `<div class="s">${data.governing_case ? 'governs: ' + data.governing_case : '&nbsp;'}</div></div>` +
+    '</div>';
+  html += '<div style="margin:4px 0">' +
+    (data.can_revert ? '<button id="revertBtn" title="Put back the layout this was edited from">Revert</button>' : '') +
+    (data.source === 'manual' ? '<button id="reoptBtn" title="Re-run at the same bolt count with the bolts you dragged held in place">Re-optimize around this</button>' : '') +
+    `<button id="exportBtn" class="primary" title="Original DXF plus BOLTS / FIXED_BOLTS / DATUM / FORCE layers and a results note"${data.feasible === false ? ' disabled' : ''}>Export DXF</button>` +
+    '</div>';
+  if (data.bearing) {
+    html += `<div class="hint">Bearing model on: d = ${fmt(data.bolt_diameter, 2)} ${units}, capacity saturates at lc = 2d = ${fmt(data.bolt_diameter * 2, 2)}; eff = load / k.</div>`;
+  } else {
+    html += '<div class="hint">Bearing model off: peak is the plain elastic load.</div>';
+  }
+
+  if (data.per_case && data.per_case.length) {
+    html += '<h4>Per case</h4><table class="tbl"><tr><th>case</th><th class="num">peak' + (data.bearing ? ' eff' : '') + '</th>' +
+      (data.bearing ? '<th class="num">raw</th>' : '') + '<th>worst bolt</th><th></th></tr>';
+    data.per_case.forEach(pc => {
+      const gov = (pc.name === data.governing_case);
+      html += `<tr${gov ? ' class="gov"' : ''}><td>${pc.name}</td><td class="num">${fmt(pc.peak, 1)}</td>` +
+        (data.bearing ? `<td class="num">${fmt(pc.raw_peak, 1)}</td>` : '') +
+        `<td>B${pc.governing_bolt_index + 1}</td><td>${gov ? 'governs' : ''}</td></tr>`;
+    });
+    html += '</table>';
+  }
+
+  const pb = data.per_bolt || [];
+  const rowCls = i => {
+    const c = [];
+    if (state.boltStatus[i] && state.boltStatus[i].bad) c.push('bad');
+    else if (i === govBolt) c.push('gov');
+    if (data.bolts[i].fixed) c.push('fixed');
+    return c.length ? ` class="${c.join(' ')}"` : '';
+  };
+  html += `<h4>Per bolt (${rel}, ${units})</h4><div class="tblWrap">`;
+  if (data.bearing && pb.length === data.bolts.length) {
+    html += '<table class="tbl"><tr><th>#</th><th title="user-placed: carries load but the optimizer never moved it">fix</th><th class="num">x</th><th class="num">y</th>' +
+      '<th class="num" title="raw elastic load in the bolt\'s worst case">load</th>' +
+      '<th class="num" title="clear distance from the hole edge to the first material edge along the bearing direction (the way the bolt pushes on the plate)">lc</th>' +
+      '<th class="num" title="capacity fraction, clamp(lc / 2d, k_min, 1)">k</th><th class="num" title="load / k">eff</th>' +
+      '<th title="what ended the tear-out path: outer edge, hole, or adjacent bolt">limiter</th></tr>';
+    data.bolts.forEach((b, i) => {
+      const r = pb[i];
+      html += `<tr${rowCls(i)}><td>B${i + 1}</td><td>${b.fixed ? '✓' : ''}</td>` +
+        `<td class="num">${fmt(b.x, 2)}</td><td class="num">${fmt(b.y, 2)}</td>` +
+        `<td class="num">${fmt(r.load, 1)}</td><td class="num">${fmt(r.lc, 2)}</td><td class="num">${fmt(r.k, 3)}</td>` +
+        `<td class="num">${fmt(r.effective_load, 1)}</td><td title="${r.k >= 1 ? 'capacity saturated (lc ≥ 2d): no limiter applies' : ''}">${r.k >= 1 ? '—' : (r.limiter || '')}</td></tr>`;
+    });
+  } else {
+    html += '<table class="tbl"><tr><th>#</th><th>fixed</th><th class="num">x</th><th class="num">y</th><th class="num">load</th></tr>';
+    data.bolts.forEach((b, i) => {
+      const r = pb[i];
+      html += `<tr${rowCls(i)}><td>B${i + 1}</td><td>${b.fixed ? '✓' : ''}</td>` +
+        `<td class="num">${fmt(b.x, 3)}</td><td class="num">${fmt(b.y, 3)}</td><td class="num">${r ? fmt(r.load, 1) : ''}</td></tr>`;
+    });
+  }
+  html += '</table></div>';
+  if (govBolt >= 0) html += `<div class="hint">Highlighted row: worst bolt in the governing case (B${govBolt + 1}). Bolt numbers match the canvas labels.` +
+    (data.bearing ? ' Limiter "—" means lc ≥ 2d (full capacity).' : '') + '</div>';
+
+  if (data.forces && data.forces.length) {
+    html += `<h4>Force cases (${rel})</h4><div class="tblWrap"><table class="tbl"><tr><th>case</th><th class="num">x</th><th class="num">y</th>` +
+      '<th class="num">Fx</th><th class="num">Fy</th><th class="num">|F|</th><th class="num">angle</th></tr>';
+    data.forces.forEach(f => {
+      const mag = Math.hypot(f.fx, f.fy), ang = Math.atan2(f.fy, f.fx) * 180 / Math.PI;
+      html += `<tr><td>${f.name}</td><td class="num">${fmt(f.x, 3)}</td><td class="num">${fmt(f.y, 3)}</td>` +
+        `<td class="num">${fmt(f.fx, 2)}</td><td class="num">${fmt(f.fy, 2)}</td><td class="num">${fmt(mag, 2)}</td><td class="num">${fmt(ang, 1)}°</td></tr>`;
+    });
+    html += '</table></div>';
+  }
+  $('resultsArea').innerHTML = html;
+  const rb = $('revertBtn'); if (rb) rb.onclick = revertLayout;
+  const ro = $('reoptBtn'); if (ro) ro.onclick = reoptimizeAroundDragged;
+  $('exportBtn').onclick = exportDxf;
+  const sr = $('sumResults');
+  sr.textContent = `N=${data.n} · peak ${fmt(peak, 1)} · ${Number.isFinite(margin) ? (margin >= 0 ? '+' : '') + fmt(margin, 1) + '%' : ''}`;
+  sr.className = 'sum ' + (ok ? 'ok' : 'bad');
+  $('stepResults').open = true;
+}
+
+async function loadResult() {
+  if (state.running) return;   // the run's own frames own the canvas until it finishes
+  try {
+    const data = await withBusy('Building geometry fields…', api('/result'), 400);
+    if (data.positions && data.positions.length && !boltDrag) {
+      // /result re-scores the stored layout against the current settings; the
+      // positions are the stored ones, so the canvas follows them exactly
+      state.bolts = data.positions.map(p => [p[0], p[1]]);
+      state.boltFixed = data.bolts.map(b => !!b.fixed);
+    }
+    applyEvaluation(data);
+  } catch (e) { showError(e.message); }
+}
+
+// Export through fetch rather than a plain link, so a refusal (a bolt outside
+// the region, or two bolts too close) surfaces as a toast instead of
+// navigating the tab to a JSON error page.
+async function exportDxf() {
+  try {
+    const res = await withBusy('Writing DXF…', fetch('/export.dxf'));
+    if (!res.ok) throw new Error((await res.json()).detail);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'bolt_layout.dxf';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('bolt_layout.dxf downloaded.', 'info', 4000);
+  } catch (err) { showError(err.message); }
+}
+
+renderForces();
+renderFixedBolts();
+updateStatus();
+resizeCanvas();
+</script>
+</body>
+</html>
