@@ -22,8 +22,10 @@ torch is expected to already be present in the conda env.)
 
 ```powershell
 conda activate ToastEnv
-uvicorn app.main:app --port 8000
+python run.py
 ```
+
+This starts the server on `http://127.0.0.1:8000` and opens it in your browser. (Equivalent to `uvicorn app.main:app --port 8000`.)
 
 Then open http://127.0.0.1:8000/ in a browser.
 
