@@ -16,6 +16,7 @@ import numpy as np
 import shapely
 import torch
 
+from app.backend import CPU, backend_from_settings, eye_bool
 from app.geometry import build_region_sdf, project_to_region, region_tolerance
 
 
@@ -138,11 +139,16 @@ def bearing_clear_distance(P, M, total, mags, fields, bolt_diameter, big=None):
     ramp = lambda z: torch.clamp(z / soft, min=0.0, max=1.0)
     gate = ramp(d - perp) * ramp(along - d)
     live_j = M.view(B, 1, 1, N).to(P.dtype)
-    eye = torch.eye(N, dtype=torch.bool, device=P.device).view(1, 1, N, N)
+    eye = eye_bool(N, P.device).view(1, 1, N, N)
     gate = gate * live_j * (~eye).to(P.dtype)
 
     cand = (along - d) + (1.0 - gate) * BIG
-    lc_adj = cand.min(dim=-1).values                                    # (B,C,N)
+    # `torch.amin`, not `cand.min(dim=-1).values`: the two are identical
+    # mathematically, but `min(dim)` routes its backward through a scatter that
+    # DirectML rejects outright ("scatter doesn't allow partially modified
+    # dimensions"), while `amin` uses a mask-and-divide backward that works on
+    # every backend.  This is the only reduction here that gets differentiated.
+    lc_adj = torch.amin(cand, dim=-1)                                   # (B,C,N)
 
     lc = torch.minimum(lc_mat, lc_adj)
     with torch.no_grad():
@@ -439,7 +445,7 @@ def spacing_flags(P, M, min_spacing, tol=1e-6):
     """
     d = pairwise_distances(P)
     N = M.shape[1]
-    eye = torch.eye(N, dtype=torch.bool, device=P.device).view(1, N, N)
+    eye = eye_bool(N, P.device).view(1, N, N)
     live_pair = (M.unsqueeze(2) & M.unsqueeze(1)) & ~eye
     viol = live_pair & (d < float(min_spacing) - tol)
     return (~viol.any(-1)) & M, ~viol.any(-1).any(-1)
@@ -697,10 +703,15 @@ async def run_optimization(region, forces, settings,
                   and material_region is not None
                   and not material_region.is_empty)
 
-    cuda_available = torch.cuda.is_available()
-    use_gpu = bool(settings.get("use_gpu", False)) and cuda_available
-    device = torch.device("cuda" if use_gpu else "cpu")
-    dtype = torch.float64
+    # Compute backend. dtype is a *property of the backend*, not a constant:
+    # DirectML has no float64 kernels, so the search runs in float32 there.
+    backend = backend_from_settings(settings)
+    device, dtype = backend.device, backend.dtype
+    # The final scoring pass is always CPU/float64 whatever the search ran on,
+    # so the numbers the user reads (and exports, and sees again from
+    # `POST /evaluate` while dragging) are identical across backends and do not
+    # inherit float32 rounding from a DirectML run.
+    score_dtype, score_device = torch.float64, torch.device(CPU)
 
     def _stop():
         return bool(should_stop and should_stop())
@@ -708,21 +719,27 @@ async def run_optimization(region, forces, settings,
     rng = np.random.default_rng(seed)
 
     t_fields = time.perf_counter()
+    # Fields are always *built* on the CPU in float64 -- rasterizing them is
+    # numpy/shapely work -- and moved onto the compute device exactly once.
     if fields is not None and bool(fields.has_ray_field) == bool(bearing_on):
-        sdf = fields
-        if sdf.device != device or sdf.dtype != dtype:
-            sdf = sdf.to(device=device, dtype=dtype)
+        fields_cpu = fields
     else:
-        sdf = build_region_sdf(region, resolution=sdf_resolution, device=device, dtype=dtype,
-                               material_region=material_region,
-                               n_dirs=ray_dirs if bearing_on else 0,
-                               ray_resolution=ray_resolution,
-                               # k saturates at lc = 2d, i.e. a ray distance of 2.5d;
-                               # a little headroom past that is all the model can use.
-                               ray_cap=(3.0 * bolt_diameter) if bearing_on else None)
+        fields_cpu = build_region_sdf(region, resolution=sdf_resolution,
+                                      device=None, dtype=score_dtype,
+                                      material_region=material_region,
+                                      n_dirs=ray_dirs if bearing_on else 0,
+                                      ray_resolution=ray_resolution,
+                                      # k saturates at lc = 2d, i.e. a ray distance
+                                      # of 2.5d; a little headroom past that is all
+                                      # the model can use.
+                                      ray_cap=(3.0 * bolt_diameter) if bearing_on else None)
+    sdf = (fields_cpu if (fields_cpu.device == device and fields_cpu.dtype == dtype)
+           else fields_cpu.to(device=device, dtype=dtype))
     field_build_s = time.perf_counter() - t_fields
-    bearing = ({"fields": sdf, "d": bolt_diameter, "k_min": k_min}
-               if (bearing_on and sdf.has_ray_field) else None)
+    _bear = bearing_on and sdf.has_ray_field
+    bearing = {"fields": sdf, "d": bolt_diameter, "k_min": k_min} if _bear else None
+    bearing_cpu = ({"fields": fields_cpu.to(device=score_device, dtype=score_dtype),
+                    "d": bolt_diameter, "k_min": k_min} if _bear else None)
 
     seeds, masks, ns = build_seeds(region, n_min, n_max, seeds_per_n, min_spacing, rng,
                                    fixed=fixed)
@@ -730,14 +747,17 @@ async def run_optimization(region, forces, settings,
         yield {"status": "error", "message": "Could not generate any seed layouts in the region."}
         return
 
-    P = torch.tensor(seeds, dtype=dtype, device=device, requires_grad=True)
-    M = torch.tensor(masks, dtype=torch.bool, device=device)
-    N_vec = torch.tensor(ns, dtype=torch.long, device=device)
+    # Every tensor here starts as a float64 numpy array, so it goes through the
+    # backend: the cast to the backend's dtype happens on the CPU and only the
+    # final dtype is ever copied to the device (DirectML cannot hold float64).
+    P = backend.tensor(seeds, requires_grad=True)
+    M = backend.tensor(masks, dtype=torch.bool)
+    N_vec = backend.tensor(ns, dtype=torch.long)
 
-    force_points = torch.tensor([[c["x"], c["y"]] for c in cases], dtype=dtype, device=device)
-    force_vectors = torch.tensor([[c["fx"], c["fy"]] for c in cases], dtype=dtype, device=device)
+    force_points = backend.tensor([[c["x"], c["y"]] for c in cases])
+    force_vectors = backend.tensor([[c["fx"], c["fy"]] for c in cases])
     case_names = [c["name"] for c in cases]
-    fixed_t = torch.tensor(fixed, dtype=dtype, device=device) if F else None
+    fixed_t = backend.tensor(fixed) if F else None
 
     force_mag = max((math.hypot(c["fx"], c["fy"]) for c in cases), default=0.0) or 1.0
     # Penalty weights are scaled so a full-`min_spacing` violation costs a
@@ -885,10 +905,12 @@ async def run_optimization(region, forces, settings,
     region_ok = np.all(ok_flat | ~Mn, axis=1)
 
     layouts = score_layouts(
-        Pn, Mn, force_points, force_vectors, case_names,
-        bearing=bearing, min_spacing=min_spacing, fixed_count=F,
+        Pn, Mn,
+        [[c["x"], c["y"]] for c in cases], [[c["fx"], c["fy"]] for c in cases],
+        case_names,
+        bearing=bearing_cpu, min_spacing=min_spacing, fixed_count=F,
         region_ok=region_ok, per_bolt_region_ok=ok_flat,
-        dtype=dtype, device=device,
+        dtype=score_dtype, device=score_device,
     )
 
     per_n = []
@@ -919,7 +941,10 @@ async def run_optimization(region, forces, settings,
     if winner is None:
         yield {"status": "done", "success": False, "stopped": stopped, "result": None,
                "per_n": per_n, "alternatives": [], "ceiling_met": False,
-               "device": str(device), "cuda_available": cuda_available,
+               "backend": backend.name, "backend_detail": backend.detail,
+               "device": str(device), "dtype": str(dtype).replace("torch.", ""),
+               "fallbacks": bool(backend.uses_fallbacks),
+               "cuda_available": bool(torch.cuda.is_available()),
                "message": "No layout survived the search."}
         return
 
@@ -961,7 +986,11 @@ async def run_optimization(region, forces, settings,
         "n_clamped": bool(clamp_note),
         "bolt_diameter": bolt_diameter if bearing is not None else None,
         "field_build_s": field_build_s,
+        "backend": backend.name,
+        "backend_detail": backend.detail,
         "device": str(device),
-        "cuda_available": cuda_available,
+        "dtype": str(dtype).replace("torch.", ""),
+        "fallbacks": bool(backend.uses_fallbacks),
+        "cuda_available": bool(torch.cuda.is_available()),
         "message": message,
     }

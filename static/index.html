@@ -231,7 +231,9 @@
           <input type="number" id="nMax" value="12" min="1" step="1" style="width:56px"></div>
         <div class="row"><label>Seeds per N</label><input type="number" id="seedsPerN" value="80" min="1" step="10"></div>
         <div class="row"><label>Iterations</label><input type="number" id="iterations" value="300" min="10" step="50"></div>
-        <div class="row check"><label><input type="checkbox" id="useGpu"> Use GPU</label> <span id="deviceLabel" class="hint"></span></div>
+        <div class="row"><label>Compute backend</label>
+          <select id="backendSel"><option value="cpu">CPU</option></select></div>
+        <div class="row"><label></label><span id="deviceLabel" class="hint"></span></div>
       </div>
     </details>
 
@@ -1387,7 +1389,7 @@ async function pushSettings() {
     n_min: parseInt($('nMin').value),
     n_max: parseInt($('nMax').value),
     seeds_per_n: parseInt($('seedsPerN').value),
-    use_gpu: $('useGpu').checked,
+    backend: $('backendSel').value,
     iterations: parseInt($('iterations').value),
     units_override: $('unitsOverride').value || null,
   };
@@ -1397,7 +1399,7 @@ async function pushSettings() {
 }
 const GEOMETRY_SETTINGS = ['edgeClearance', 'boltDiameter', 'bearingEnabled'];
 const SCORE_SETTINGS = ['minSpacing', 'loadCeiling', 'unitsOverride'];
-['edgeClearance', 'minSpacing', 'boltDiameter', 'bearingEnabled', 'loadCeiling', 'nMin', 'nMax', 'seedsPerN', 'iterations', 'unitsOverride', 'useGpu'].forEach(id => {
+['edgeClearance', 'minSpacing', 'boltDiameter', 'bearingEnabled', 'loadCeiling', 'nMin', 'nMax', 'seedsPerN', 'iterations', 'unitsOverride', 'backendSel'].forEach(id => {
   $(id).addEventListener('change', async () => {
     await pushSettings();
     if (GEOMETRY_SETTINGS.includes(id)) await afterGeometryChange();
@@ -1448,8 +1450,24 @@ function setRunning(running) {
 (async () => {
   try {
     const d = await api('/device');
-    $('deviceLabel').textContent = d.cuda_available ? `(${d.device_name})` : '(no CUDA — CPU only)';
-    $('useGpu').disabled = !d.cuda_available;
+    // Only backends that answered a real probe on this machine are offered.
+    const LABEL = { cpu: 'CPU', cuda: 'CUDA (NVIDIA)', directml: 'DirectML (GPU)' };
+    const sel = $('backendSel');
+    sel.innerHTML = '';
+    (d.available || ['cpu']).forEach(name => {
+      const o = document.createElement('option');
+      o.value = name; o.textContent = LABEL[name] || name;
+      sel.appendChild(o);
+    });
+    sel.value = d.default || 'cpu';
+    const note = () => {
+      const n = sel.value, adapter = (d.details || {})[n];
+      $('deviceLabel').textContent =
+        n === 'cpu' ? (d.available.length > 1 ? 'GPU backends available above' : 'CPU only on this machine')
+                    : (adapter ? adapter : n);
+    };
+    sel.addEventListener('change', note);
+    note();
   } catch (e) { /* non-fatal */ }
 })();
 
@@ -1509,11 +1527,20 @@ $('runBtn').addEventListener('click', async () => {
         lastRun = {
           alternatives: frame.alternatives || [], perN: frame.per_n || [], selected: 0,
           ceiling, stopped: !!frame.stopped,
-          info: { batch: frame.batch_size, device: frame.device, iterations: frame.iterations_run,
+          info: { batch: frame.batch_size, device: frame.device, backend: frame.backend,
+                  backendDetail: frame.backend_detail, dtype: frame.dtype,
+                  fallbacks: frame.fallbacks, iterations: frame.iterations_run,
                   fields: frame.field_build_s, clamped: frame.n_clamped, message: frame.message, ceilingMet: frame.ceiling_met },
         };
         $('progressText').textContent = (frame.stopped ? 'Stopped early. ' : frame.ceiling_met ? 'Done. ' : 'Done — ceiling not met. ') +
-          `${frame.batch_size} layouts, ${frame.iterations_run} iterations on ${frame.device}` +
+          `${frame.batch_size} layouts, ${frame.iterations_run} iterations on ` +
+          // report the backend that *actually* ran (a request for an absent one
+          // degrades to cpu), its adapter, its precision and whether the
+          // DirectML op substitutes were in play
+          `${frame.backend || frame.device}` +
+          (frame.backend_detail ? ` — ${frame.backend_detail}` : '') +
+          (frame.dtype && frame.dtype !== 'float64' ? `, ${frame.dtype}` : '') +
+          (frame.fallbacks ? ', op fallbacks' : '') +
           (frame.field_build_s > 0.05 ? `, fields ${fmt(frame.field_build_s, 1)} s` : '') + '.';
         if (frame.n_clamped) toast(frame.message, 'info', 10000);
         draw();

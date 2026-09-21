@@ -146,6 +146,78 @@ import torch
 import torch.nn.functional as F
 import shapely
 
+from app.backend import needs_sampler_fallback
+
+
+# ---------------------------------------------------------------------------
+# Hand-written grid samplers (the DirectML fallback path)
+#
+# `aten::grid_sampler_2d` / `_3d` have no DirectML kernel.  torch_directml does
+# not fail on them -- it silently round-trips the whole call through the CPU and
+# prints a UserWarning once -- which is correct but disastrous here, because
+# `grid_sample` is the single hottest op in the inner loop and every iteration
+# would pay two device<->host copies of the entire field.
+#
+# These substitutes do the same interpolation out of `index_select` + arithmetic,
+# which DirectML *does* implement, so the sampling stays on the device.  They
+# match `align_corners=True, padding_mode="border"` exactly (the caller already
+# clamps normalized coordinates into [-1, 1], so "border" only ever matters at
+# the very edge cells) and they are differentiable in the coordinates -- the
+# gradient lives in the interpolation weights, exactly as it does for the real
+# `grid_sample`, whose input volume is a constant here.
+# ---------------------------------------------------------------------------
+
+def _axis_weights(g, n):
+    """Normalized coord in [-1,1] -> (lo idx, hi idx, hi weight) for `n` samples."""
+    t = (g.clamp(-1.0, 1.0) + 1.0) * 0.5 * (n - 1)
+    lo = torch.floor(t.detach()).clamp(0, max(n - 2, 0))
+    w = (t - lo).clamp(0.0, 1.0)
+    lo = lo.long()
+    hi = (lo + 1).clamp(max=n - 1)
+    return lo, hi, w
+
+
+def bilinear_sample(vol, gx, gy):
+    """vol: (ny, nx). gx/gy: (M,) normalized coords. Returns (M,) values."""
+    ny, nx = vol.shape
+    flat = vol.reshape(-1)
+    ix0, ix1, wx = _axis_weights(gx, nx)
+    iy0, iy1, wy = _axis_weights(gy, ny)
+
+    def at(iy, ix):
+        return flat.index_select(0, iy * nx + ix)
+
+    top = at(iy0, ix0) * (1 - wx) + at(iy0, ix1) * wx
+    bot = at(iy1, ix0) * (1 - wx) + at(iy1, ix1) * wx
+    return top * (1 - wy) + bot * wy
+
+
+def trilinear_sample(vol, gx, gy, gz, nearest=False):
+    """vol: (nz, ny, nx). gx/gy/gz: (M,) normalized coords. Returns (M,) values.
+
+    With `nearest=True` this is nearest-neighbour instead (used for the ray
+    field's boundary-kind label, which is a class id, not a quantity).
+    """
+    nz, ny, nx = vol.shape
+    flat = vol.reshape(-1)
+    ix0, ix1, wx = _axis_weights(gx, nx)
+    iy0, iy1, wy = _axis_weights(gy, ny)
+    iz0, iz1, wz = _axis_weights(gz, nz)
+
+    def at(iz, iy, ix):
+        return flat.index_select(0, (iz * ny + iy) * nx + ix)
+
+    if nearest:
+        pick = lambda i0, i1, w: torch.where(w > 0.5, i1, i0)  # noqa: E731
+        return at(pick(iz0, iz1, wz), pick(iy0, iy1, wy), pick(ix0, ix1, wx))
+
+    def plane(iz):
+        top = at(iz, iy0, ix0) * (1 - wx) + at(iz, iy0, ix1) * wx
+        bot = at(iz, iy1, ix0) * (1 - wx) + at(iz, iy1, ix1) * wx
+        return top * (1 - wy) + bot * wy
+
+    return plane(iz0) * (1 - wz) + plane(iz1) * wz
+
 
 class RegionFields:
     """Rasterized fields over one shared grid + affine, sampled differentiably.
@@ -185,7 +257,8 @@ class RegionFields:
     direction step pessimistic.
     """
 
-    def __init__(self, grid, minx, miny, maxx, maxy, ray=None, ray_kind=None):
+    def __init__(self, grid, minx, miny, maxx, maxy, ray=None, ray_kind=None,
+                 _cells=None):
         self.grid = grid  # (ny, nx) tensor
         self.minx, self.miny, self.maxx, self.maxy = float(minx), float(miny), float(maxx), float(maxy)
         self._g = grid.unsqueeze(0).unsqueeze(0)  # (1,1,ny,nx) for grid_sample
@@ -197,7 +270,15 @@ class RegionFields:
         # and gathering two of them, which costs K times as much in the inner
         # loop.  The volume holds per-cell minima (see the class docstring), so
         # its samples live at cell centres rather than on the nodes.
-        self._r, self._rk = self._as_cell_volumes(ray, ray_kind)
+        # `_cells` lets `to()` carry the already-pooled volumes across a device
+        # move instead of redoing the 8-way min on the target device -- which on
+        # DirectML would mean running the pooling reduction there for nothing.
+        if _cells is not None:
+            self._r, self._rk = _cells
+        else:
+            self._r, self._rk = self._as_cell_volumes(ray, ray_kind)
+        # Sampling substitutes for the missing DirectML grid_sample kernels.
+        self.fallback_sampling = needs_sampler_fallback(self.grid.device)
 
     @staticmethod
     def _as_cell_volumes(ray, ray_kind):
@@ -243,10 +324,10 @@ class RegionFields:
         return 0 if self.ray is None else int(self.ray.shape[0])
 
     def to(self, device=None, dtype=None):
-        g = self.grid.to(device=device, dtype=dtype)
-        r = self.ray.to(device=device, dtype=dtype) if self.ray is not None else None
-        rk = self.ray_kind.to(device=device, dtype=dtype) if self.ray_kind is not None else None
-        return RegionFields(g, self.minx, self.miny, self.maxx, self.maxy, ray=r, ray_kind=rk)
+        mv = lambda t: None if t is None else t.to(device=device, dtype=dtype)  # noqa: E731
+        cells = (mv(self._r), mv(self._rk)) if self._r is not None else None
+        return RegionFields(mv(self.grid), self.minx, self.miny, self.maxx, self.maxy,
+                            ray=mv(self.ray), ray_kind=mv(self.ray_kind), _cells=cells)
 
     # -- shared affine ------------------------------------------------------
 
@@ -293,11 +374,14 @@ class RegionFields:
         oy = torch.clamp(self.miny - y, min=0.0) + torch.clamp(y - self.maxy, min=0.0)
         d_out = torch.sqrt(ox * ox + oy * oy + 1e-18)
 
-        g = torch.stack([gx.clamp(-1.0, 1.0), gy.clamp(-1.0, 1.0)], dim=-1).view(1, 1, -1, 2)
-        vals = F.grid_sample(
-            self._g.to(dtype=pts.dtype), g.to(dtype=pts.dtype),
-            mode="bilinear", padding_mode="border", align_corners=True,
-        )[0, 0, 0]
+        if self.fallback_sampling:
+            vals = bilinear_sample(self.grid.to(dtype=pts.dtype), gx, gy)
+        else:
+            g = torch.stack([gx.clamp(-1.0, 1.0), gy.clamp(-1.0, 1.0)], dim=-1).view(1, 1, -1, 2)
+            vals = F.grid_sample(
+                self._g.to(dtype=pts.dtype), g.to(dtype=pts.dtype),
+                mode="bilinear", padding_mode="border", align_corners=True,
+            )[0, 0, 0]
         return (vals - d_out).reshape(points.shape[:-1])
 
     # -- directional (ray) distance ----------------------------------------
@@ -333,6 +417,16 @@ class RegionFields:
         hz = 2.0 * math.pi / K
         th = torch.remainder(ang, 2.0 * math.pi)
         gz = 2.0 * (th - 0.5 * hz) / max(2.0 * math.pi - hz, 1e-12) - 1.0
+
+        if self.fallback_sampling:
+            rv = self._r[0, 0].to(dtype=pts.dtype)
+            out = trilinear_sample(rv, gx, gy, gz)
+            if not with_kind:
+                return out.reshape(shape)
+            with torch.no_grad():
+                kind = trilinear_sample(self._rk[0, 0].to(dtype=pts.dtype),
+                                        gx, gy, gz, nearest=True)
+            return out.reshape(shape), kind.reshape(shape)
 
         g = torch.stack([gx.clamp(-1.0, 1.0), gy.clamp(-1.0, 1.0), gz.clamp(-1.0, 1.0)], dim=-1) \
                  .view(1, 1, 1, -1, 3)

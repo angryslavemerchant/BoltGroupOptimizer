@@ -1,0 +1,26 @@
+# DirectML backend environment (Windows, non-NVIDIA GPUs).
+#
+# torch_directml is published only as pre-releases and hard-pins the torch it was
+# built against (0.2.5.dev240914 -> torch==2.4.1), so it CANNOT share an
+# environment with a newer torch. Install this into its own venv:
+#
+#   py -3.11 -m venv .venv-dml
+#   .venv-dml\Scripts\python.exe -m pip install --pre -r requirements-directml.txt
+#
+# The --pre flag is required: every torch_directml release on PyPI is a .devN.
+torch-directml==0.2.5.dev240914
+# pulled in by torch-directml's pins, listed for clarity:
+#   torch==2.4.1, torchvision==0.19.1
+# torch 2.4.x predates the numpy 2.x ABI, so the stack is pinned to numpy 1.x here.
+numpy==1.26.4
+fastapi==0.141.1
+# --pre (needed for torch_directml) would otherwise pull a pydantic beta
+pydantic==2.12.4
+uvicorn[standard]==0.53.0
+ezdxf==1.4.4
+shapely==2.0.6
+python-multipart==0.0.32
+pytest==9.1.1
+# starlette 1.x TestClient needs this explicitly
+httpx2
+matplotlib==3.9.2

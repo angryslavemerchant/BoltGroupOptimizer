@@ -7,27 +7,88 @@ and optimization approach.
 
 ## Setup
 
-Uses the `ToastEnv` conda environment (already has `torch` + the scientific
-stack installed):
+Python 3.11+. Any environment with `torch` works; a fresh venv is simplest:
 
 ```powershell
-conda activate ToastEnv
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # or a CUDA build
 pip install -r requirements.txt
 ```
 
-(`requirements.txt` no longer pins torch to a specific CPU wheel index —
-torch is expected to already be present in the conda env.)
+`requirements.txt` does not pin a torch build so you can pick CPU or CUDA.
+If you already have a conda env with torch, just `pip install -r requirements.txt` there.
+
+## Compute backends
+
+The optimizer can run on three backends, chosen at run time from the **Compute
+backend** dropdown in step 5. Only the ones this machine can actually use are
+offered — `GET /device` probes each and returns `{available, default, details}`,
+and the adapter / GPU name is shown beside the dropdown.
+
+| backend | device | precision | needs |
+| --- | --- | --- | --- |
+| `cpu` | CPU | float64 | nothing — always available, always the default |
+| `cuda` | NVIDIA GPU | float64 | a CUDA-enabled `torch` build |
+| `directml` | any DirectX 12 GPU (AMD, Intel, NVIDIA) | **float32** | `torch_directml`, in its own venv |
+
+Precision is a property of the backend, not a setting: **DirectML has no
+float64 kernels at all**, so the search runs in float32 there. The final
+scoring pass is always redone on the CPU in float64 whatever the search ran on,
+so the loads, `lc`, `k` and feasibility flags you read and export are identical
+across backends — only the search path differs. The results header names the
+backend that actually ran (a request for one that is not present quietly
+degrades to `cpu`) and says whether the DirectML op substitutes were in play.
+
+### Install 1 — standard (CPU / CUDA)
+
+The Setup section above. Install a CUDA torch build if you want the `cuda`
+backend.
+
+### Install 2 — DirectML (separate venv, required)
+
+`torch_directml` **hard-pins the torch it was built against** — 0.2.5.dev240914
+pins `torch==2.4.1` — so it cannot share an environment with a newer torch
+(ToastEnv has 2.10). It is also published only as pre-releases, hence `--pre`.
+Give it its own venv:
+
+```powershell
+py -3.11 -m venv .venv-dml
+.venv-dml\Scripts\python.exe -m pip install --pre -r requirements-directml.txt
+```
+
+`.venv-dml/` is gitignored. `run.py`, the test suite and the tools work
+unchanged from either environment — the only difference is which backends
+`GET /device` reports.
+
+```powershell
+.venv-dml\Scripts\python.exe run.py     # server with cpu + directml
+```
+
+Two helper scripts live in `tools/`:
+
+* `tools/dml_probe.py` — runs every torch op the optimizer uses on the DirectML
+  device and prints an OK / FAIL / **CPU-FB** table. `CPU-FB` is the row to
+  care about: `torch_directml` does not raise on an op it lacks a kernel for,
+  it silently copies the call to the CPU and back.
+* `tools/bench_backends.py` — the same optimizer run on several backends from
+  one identical seed, for comparing N / peak / wall time.
+
+DirectML is not automatically faster. This problem is small (a few thousand
+2-vectors) and DirectML's per-kernel launch overhead is high, so at modest seed
+counts the CPU wins outright; see `tools/bench_backends.py` for your own
+machine's crossover.
+
+Set `BOLTOPT_FORCE_FALLBACKS=1` to exercise the DirectML substitute code paths
+on an ordinary CPU run — the test suite uses this so they stay covered.
 
 ## Run
 
 ```powershell
-conda activate ToastEnv
 python run.py
 ```
 
 This starts the server on `http://127.0.0.1:8000` and opens it in your browser. (Equivalent to `uvicorn app.main:app --port 8000`.)
-
-Then open http://127.0.0.1:8000/ in a browser.
 
 ## Usage (click workflow)
 
@@ -111,9 +172,10 @@ wheel zooms, middle-drag / Space+drag also pan.
    governing one; the per-N table keeps showing the overall peak.
 7. **Settings** (step 5) — edge clearance, min bolt spacing, **bolt
    diameter**, a **Bearing model** toggle, load ceiling, N sweep range
-   (N min is at least 1), **seeds per N**, iteration budget and an optional
-   **Use GPU** toggle (enabled only when CUDA is available; the label names
-   the detected device). The units override lives in step 1. Each length
+   (N min is at least 1), **seeds per N**, iteration budget and the **Compute
+   backend** dropdown (see "Compute backends" above — it lists only the
+   backends this machine can actually run, with the GPU / DirectML adapter
+   name beneath it). The units override lives in step 1. Each length
    field shows the effective unit next to it.
 
    **Results always reflect the current inputs.** Changing any setting, force

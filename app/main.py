@@ -19,9 +19,15 @@ from starlette.background import BackgroundTask
 from app.dxf_loader import load_dxf
 from app.geometry import (build_legal_region, build_material_region,
                           region_to_geojson_like, region_tolerance, build_region_sdf)
+from app.backend import CPU, available_backends, backend_details
 from app.optimizer import run_optimization, score_layouts
 
 app = FastAPI()
+
+# Every name the settings endpoint will accept, whether or not this machine can
+# run it: a project saved on a DirectML laptop must still load on a CUDA box
+# (the run then silently degrades to cpu). `/device` says what is *available*.
+AVAILABLE_BACKEND_NAMES = ("cpu", "cuda", "directml")
 
 STATE = {
     "dxf_path": None,
@@ -46,7 +52,10 @@ STATE = {
         "n_max": 12,
         "seeds_per_n": 80,
         "iterations": 300,
-        "use_gpu": False,
+        # Compute backend: "cpu" | "cuda" | "directml". Defaults to cpu; an
+        # unavailable choice degrades to cpu at run time rather than erroring
+        # (see app/backend.py), and the done frame reports what actually ran.
+        "backend": "cpu",
         # Bearing / tear-out model (AISC J3.10 shaped). `bolt_diameter` is the
         # hole diameter lc is measured from; capacity saturates at lc = 2d.
         "bolt_diameter": 6.0,
@@ -263,6 +272,8 @@ class SettingsBody(BaseModel):
     n_max: Optional[int] = None
     seeds_per_n: Optional[int] = None
     iterations: Optional[int] = None
+    backend: Optional[str] = None
+    # accepted for back-compat with saved/older clients; mapped onto `backend`
     use_gpu: Optional[bool] = None
     bolt_diameter: Optional[float] = None
     bearing_enabled: Optional[bool] = None
@@ -274,6 +285,14 @@ class SettingsBody(BaseModel):
 @app.post("/settings")
 def set_settings(body: SettingsBody):
     for k, v in body.model_dump(exclude_unset=True).items():
+        if k == "use_gpu":
+            # legacy boolean: true meant "CUDA if you have it"
+            STATE["settings"]["backend"] = "cuda" if v else "cpu"
+            continue
+        if k == "backend" and v is not None:
+            v = str(v).strip().lower()
+            if v not in AVAILABLE_BACKEND_NAMES:
+                raise HTTPException(status_code=400, detail=f"unknown backend {v!r}")
         STATE["settings"][k] = v
     return {"settings": STATE["settings"]}
 
@@ -588,11 +607,23 @@ async def optimize_ws(ws: WebSocket):
 
 @app.get("/device")
 def get_device():
-    """Frontend uses this to decide whether the "use GPU" checkbox means anything."""
+    """Which compute backends this process can actually run on.
+
+    The frontend fills its "Compute backend" dropdown straight from `available`
+    and shows `details[name]` (the GPU / DirectML adapter name) beside it, so an
+    option is only ever offered when a real device answered a probe.
+    """
     import torch
+    avail = available_backends()
+    details = backend_details()
     return {
-        "cuda_available": bool(torch.cuda.is_available()),
-        "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+        "available": avail,
+        "default": CPU,
+        "details": details,
+        # legacy keys, still read by anything that has not moved to `available`
+        "cuda_available": "cuda" in avail,
+        "device_name": details.get("cuda") or "cpu",
+        "torch_version": torch.__version__,
     }
 
 
